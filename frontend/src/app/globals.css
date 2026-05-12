@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: 'Pretendard';
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/PretendardVariable.woff2') format('woff2-variations');
+}
+
+html, body { height: 100%; background: #fafbfc; color: #111827; }
+body { font-family: 'Pretendard', system-ui, -apple-system, sans-serif; }
+
+* { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+.scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+
+.prose-md { font-size: 14px; line-height: 1.65; color: #1f2937; }
+.prose-md h1 { font-size: 22px; font-weight: 700; margin: 16px 0 8px; }
+.prose-md h2 { font-size: 18px; font-weight: 700; margin: 14px 0 6px; }
+.prose-md h3 { font-size: 16px; font-weight: 600; margin: 12px 0 4px; }
+.prose-md p { margin: 8px 0; }
+.prose-md ul { margin: 8px 0; padding-left: 22px; list-style: disc; }
+.prose-md ol { margin: 8px 0; padding-left: 22px; list-style: decimal; }
+.prose-md code { font-family: ui-monospace, SFMono-Regular, monospace; background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-size: 12.5px; }
+.prose-md pre { background: #f3f4f6; padding: 10px; border-radius: 8px; overflow: auto; font-size: 12.5px; }
+.prose-md hr { border: none; border-top: 1px solid #e5e7eb; margin: 14px 0; }
+
+/* Mention chips — vox echo 스타일: monospace 인라인 코드 풍 + kind별 색 */
+.mention {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.88em;
+  font-weight: 400;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  display: inline-block;
+  line-height: 1.4;
+}
+.mention-skill     { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }  /* 스킬 = 장미 */
+.mention-knowledge { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }  /* 지식 = 청록 */
+.mention-tool      { background: #fffbeb; color: #b45309; border-color: #fde68a; }  /* 도구 = 호박 */
+.mention-variable  { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }  /* 변수 = 청 (Phase A) */
+.mention-unknown   { background: #f3f4f6; color: #6b7280; border-color: #e5e7eb; }  /* unknown */
+
+.dark .mention-skill     { background: rgba(239,68,68,0.12); color: #fca5a5; border-color: rgba(239,68,68,0.25); }
+.dark .mention-knowledge { background: rgba(16,185,129,0.12); color: #6ee7b7; border-color: rgba(16,185,129,0.25); }
+.dark .mention-tool      { background: rgba(245,158,11,0.12); color: #fcd34d; border-color: rgba(245,158,11,0.25); }
+.dark .mention-variable  { background: rgba(59,130,246,0.12); color: #93c5fd; border-color: rgba(59,130,246,0.25); }
+.dark .mention-unknown   { background: rgba(107,114,128,0.16); color: #9ca3af; border-color: rgba(107,114,128,0.25); }
+
+/* Monaco 에디터 안 인라인 색칠 (decorations) — padding 없는 minimal 버전 */
+.mention-deco-skill     { background: #fef2f2; color: #b91c1c !important; border-radius: 3px; }
+.mention-deco-knowledge { background: #ecfdf5; color: #047857 !important; border-radius: 3px; }
+.mention-deco-tool      { background: #fffbeb; color: #b45309 !important; border-radius: 3px; }
+.mention-deco-variable  { background: #eff6ff; color: #1d4ed8 !important; border-radius: 3px; }
+
+.dark .mention-deco-skill     { background: rgba(239,68,68,0.20); color: #fca5a5 !important; }
+.dark .mention-deco-knowledge { background: rgba(16,185,129,0.20); color: #6ee7b7 !important; }
+.dark .mention-deco-tool      { background: rgba(245,158,11,0.20); color: #fcd34d !important; }
+.dark .mention-deco-variable  { background: rgba(59,130,246,0.20); color: #93c5fd !important; }
+
+/* Runtime 프롬프트 미리보기 — kind별 섹션 색 */
+.prompt-section { padding: 12px; border-radius: 8px; margin: 8px 0; border: 1px solid; }
+.prompt-section.persona   { background: rgba(244,114,182,0.06); border-color: rgba(244,114,182,0.25); }
+.prompt-section.skill     { background: rgba(139,92,246,0.06); border-color: rgba(139,92,246,0.25); }
+.prompt-section.knowledge { background: rgba(16,185,129,0.06); border-color: rgba(16,185,129,0.25); }
+.prompt-section.tool      { background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.25); }
+.prompt-section.env       { background: rgba(14,165,233,0.06); border-color: rgba(14,165,233,0.25); }

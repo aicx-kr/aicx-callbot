@@ -1,0 +1,1522 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>vox 콜봇 에이전트 구조 분석</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  @page { @top-left { content: none; } @top-center { content: none; } @top-right { content: none; }
+          @bottom-left { content: none; } @bottom-center { content: none; } @bottom-right { content: none; } }
+  :root{
+    --c-prompt:#2563eb; --c-prompt-bg:#dbeafe;
+    --c-flow:#16a34a; --c-flow-bg:#dcfce7;
+    --c-accent:#f59e0b; --c-accent-bg:#fef3c7;
+    --c-gray:#64748b; --c-gray-bg:#f1f5f9; --c-line:#94a3b8;
+    --c-text:#0f172a; --c-muted:#475569;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0; padding:0; color:var(--c-text); font-family:-apple-system, BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","SF Pro KR","SF Pro Text",sans-serif; font-size:11pt; line-height:1.55;}
+  h1{font-size:30pt; margin:0 0 6pt 0; letter-spacing:-.01em;}
+  h2{font-size:18pt; margin:0 0 14pt 0; border-bottom:2px solid var(--c-text); padding-bottom:6pt; letter-spacing:-.01em;}
+  h3{font-size:13pt; margin:18pt 0 8pt 0; color:var(--c-text);}
+  p{margin:6pt 0;}
+  .muted{color:var(--c-muted)}
+  .small{font-size:9.5pt}
+  .page{page-break-after:always; min-height: 252mm;}
+  .page:last-child{page-break-after:auto}
+  .cover{display:flex; flex-direction:column; justify-content:center; align-items:flex-start; min-height:252mm;}
+  .badge{display:inline-block; padding:3pt 9pt; border-radius:999px; font-size:9.5pt; font-weight:600;}
+  .badge.prompt{background:var(--c-prompt-bg); color:var(--c-prompt)}
+  .badge.flow{background:var(--c-flow-bg); color:var(--c-flow)}
+  .badge.accent{background:var(--c-accent-bg); color:#92400e}
+  .badge.gray{background:var(--c-gray-bg); color:var(--c-gray)}
+  table{width:100%; border-collapse:collapse; font-size:10pt; margin:8pt 0}
+  th,td{border:1px solid #cbd5e1; padding:6pt 8pt; text-align:left; vertical-align:top}
+  th{background:#f8fafc; font-weight:600}
+  .grid-2{display:grid; grid-template-columns:1fr 1fr; gap:14pt}
+  .grid-3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:10pt}
+  .card{border:1px solid #cbd5e1; border-radius:10px; padding:10pt 12pt; background:#fff}
+  .card h4{margin:0 0 4pt 0; font-size:11pt}
+  .card.prompt{border-color:var(--c-prompt); background:linear-gradient(180deg,#fff, var(--c-prompt-bg))}
+  .card.flow{border-color:var(--c-flow); background:linear-gradient(180deg,#fff, var(--c-flow-bg))}
+  .card.accent{border-color:var(--c-accent); background:linear-gradient(180deg,#fff, var(--c-accent-bg))}
+  .kbd{font-family:"SF Mono","JetBrains Mono","Menlo",monospace; background:#f1f5f9; padding:1pt 5pt; border-radius:4px; font-size:9.5pt}
+  ul{margin:6pt 0; padding-left:18pt}
+  li{margin:3pt 0}
+  .caption{font-size:9pt; color:var(--c-muted); text-align:center; margin-top:4pt}
+  .svg-wrap{display:flex; justify-content:center; margin:10pt 0}
+  svg{max-width:100%; height:auto}
+  .tag{display:inline-block; font-size:8.5pt; padding:1pt 6pt; border-radius:4px; background:#e2e8f0; color:#334155; margin-right:3pt}
+  .pill{font-size:9pt; padding:2pt 7pt; border-radius:999px; background:#f1f5f9; color:#334155; display:inline-block; margin:1pt 2pt}
+  .pill.p{background:var(--c-prompt-bg); color:var(--c-prompt)}
+  .pill.f{background:var(--c-flow-bg); color:var(--c-flow)}
+  .pill.a{background:var(--c-accent-bg); color:#92400e}
+  .footer{font-size:8.5pt; color:var(--c-muted); border-top:1px solid #e2e8f0; padding-top:6pt; margin-top:12pt}
+  .nobreak{break-inside:avoid; page-break-inside:avoid}
+  .hero-num{font-size:64pt; font-weight:700; line-height:1; letter-spacing:-.03em;}
+  .keymsg{font-size:14pt; line-height:1.5; color:var(--c-text); margin:10pt 0;}
+  .quote{border-left:4px solid var(--c-accent); padding:6pt 12pt; background:#fffbeb; margin:8pt 0; font-size:10.5pt}
+</style>
+</head>
+<body>
+
+<!-- ============ COVER ============ -->
+<section class="page cover">
+  <div class="badge gray" style="margin-bottom:18pt">설계 분석 · 발표용</div>
+  <h1>vox 콜봇 에이전트<br/>구조 분석</h1>
+  <p class="keymsg" style="max-width:140mm">공식 docs의 노드 인덱스만으로 vox 에이전트 내부 구조를 역설계하고, aicx-callbot 인소싱 설계의 입력 자료로 정리한다.</p>
+  <div style="margin-top:50pt">
+    <div class="badge prompt">두 모드</div>
+    <div class="badge flow">4 자산</div>
+    <div class="badge accent">11 노드</div>
+  </div>
+  <p class="muted small" style="margin-top:auto">출처: docs.tryvox.co/llms.txt</p>
+</section>
+
+<!-- ============ KEY MESSAGE ============ -->
+<section class="page">
+  <h2>한 줄 요약</h2>
+  <div class="nobreak" style="text-align:center; margin:30pt 0 20pt 0">
+    <div class="keymsg" style="font-size:22pt; font-weight:700; letter-spacing:-.02em">두 모드 × 4 자산 × 11 노드</div>
+    <p class="muted" style="margin-top:6pt">vox 에이전트는 이 세 축으로 완전히 분해된다.</p>
+  </div>
+
+  <div class="grid-3" style="margin-top:18pt">
+    <div class="card prompt nobreak">
+      <div class="hero-num" style="color:var(--c-prompt)">2</div>
+      <h4>모드</h4>
+      <p class="small muted">에이전트가 정의되는 두 가지 방식</p>
+      <p><span class="pill p">프롬프트</span><span class="pill f">플로우</span></p>
+    </div>
+    <div class="card accent nobreak">
+      <div class="hero-num" style="color:var(--c-accent)">4</div>
+      <h4>자산</h4>
+      <p class="small muted">재사용 가능한 빌드 단위</p>
+      <p><span class="pill a">Persona</span><span class="pill a">Skill</span><span class="pill a">Knowledge</span><span class="pill a">Tool</span></p>
+    </div>
+    <div class="card flow nobreak">
+      <div class="hero-num" style="color:var(--c-flow)">11</div>
+      <h4>노드</h4>
+      <p class="small muted">플로우 모드의 빌딩블록</p>
+      <p><span class="pill f">begin</span><span class="pill f">end</span><span class="pill f">conv</span><span class="pill f">extract</span><span class="pill f">condition</span><span class="pill f">api</span><span class="pill f">tool</span><span class="pill f">transfer</span><span class="pill f">transfer-agent</span><span class="pill f">sms</span><span class="pill f">global</span></p>
+    </div>
+  </div>
+
+  <div class="card nobreak" style="margin-top:14pt; border-color:var(--c-gray); background:#f8fafc">
+    <h4 style="color:var(--c-gray)">+ Bot-level 평면 설정 <span class="small muted">(자산 아님 · 운영 파라미터)</span></h4>
+    <p class="small"><span class="pill">voice</span><span class="pill">greeting</span><span class="pill">인터럽트 정책</span><span class="pill">발음 사전</span><span class="pill">DTMF 키매핑</span><span class="pill">llm_model</span></p>
+    <p class="small muted" style="margin-top:4pt"><b>구분 기준:</b> 재사용·라이브러리화·CRUD가 의미 있으면 자산, 봇 1개당 보통 1개로 굳어지면 평면 설정. Voice는 후자(MVP 기준).</p>
+  </div>
+
+  <h3>발표 구성 — 3부작</h3>
+  <table style="font-size:10pt">
+    <tr><th style="width:12%">Part</th><th>주제</th><th style="width:45%">세부 섹션</th></tr>
+    <tr style="background:#dbeafe">
+      <td><b>Part 1<br/>분석</b></td>
+      <td><b>vox 구조 역추정 및 설계</b></td>
+      <td>§0 전체 구조 · §1 큰 그림 · §2 두 모드 · §3 11 노드 · §4 치과 예시 · §5 변수 시스템 · §6 멀티 에이전트</td>
+    </tr>
+    <tr style="background:#fef3c7">
+      <td><b>Part 2<br/>비판</b></td>
+      <td><b>vox 구조의 문제점</b></td>
+      <td>§7 vox가 갖는 5가지 한계 — prompt 라우팅 박힘 · Skill 부재 · 변수 자유형 · 모드 인지부담 · 운영설정 분산</td>
+    </tr>
+    <tr style="background:#dcfce7">
+      <td><b>Part 3<br/>개선</b></td>
+      <td><b>우리가 고안한 개선된 구조</b></td>
+      <td>§8 하이브리드 장단점 · §9 vox 분석 결론 · §10 데이터 모델 · §11 적용 · §12 구조 개선안 · §13 추가 개선안 · §14 정리</td>
+    </tr>
+  </table>
+  <p class="caption" style="margin-top:10pt"><b>이야기 흐름:</b> "vox는 이렇게 생겼다 → 그런데 이런 문제가 있다 → 그래서 우리는 이렇게 한다"</p>
+</section>
+
+<!-- ============ PART 1 COVER ============ -->
+<section class="page cover" style="background:#dbeafe">
+  <div class="badge prompt" style="margin-bottom:18pt">Part 1 · 분석</div>
+  <h1 style="color:#1e3a8a">vox 구조 역추정<br/>및 설계</h1>
+  <p class="keymsg" style="max-width:140mm; color:#1e40af">vox.ai 공식 docs의 노드 인덱스(11종)와 빌드 영역 구조만으로 vox 콜봇 에이전트의 내부 동작과 데이터 모델을 역추정한다.</p>
+  <p class="muted" style="margin-top:30pt"><b>다룰 내용:</b> 전체 구조 · 두 모드 · 11 노드 · △△치과 예시 · 변수 시스템 · 멀티 에이전트</p>
+</section>
+
+<!-- ============ ARCHITECTURE OVERVIEW (NEW) ============ -->
+<section class="page">
+  <h2>0. 전체 구조 한 장 — 콜봇 에이전트 아키텍처</h2>
+  <p class="muted">vox에서 도출한 구조를 우리 aicx-callbot에 매핑한 <b>레이어드 아키텍처</b>. 이후 모든 섹션은 이 그림의 한 부분을 확대해 다룬다.</p>
+
+  <div class="svg-wrap nobreak">
+    <svg viewBox="0 0 720 700" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <defs>
+        <marker id="arrM" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+      </defs>
+
+      <!-- Layer 1: Channel -->
+      <rect x="40" y="20" width="640" height="56" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5"/>
+      <text x="60" y="44" font-size="10" font-weight="700" fill="#64748b">L1 채널</text>
+      <text x="360" y="44" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">📞 전화 / SIP / SDK</text>
+      <text x="360" y="62" text-anchor="middle" font-size="9.5" fill="#475569">JS · React · Flutter · Python · 전화번호 · 인바운드/아웃바운드</text>
+
+      <line x1="360" y1="76" x2="360" y2="92" stroke="#475569" stroke-width="1.5" marker-end="url(#arrM)"/>
+
+      <!-- Layer 2: Voice -->
+      <rect x="40" y="92" width="640" height="64" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="60" y="116" font-size="10" font-weight="700" fill="#2563eb">L2 음성</text>
+      <text x="360" y="116" text-anchor="middle" font-size="13" font-weight="700" fill="#1e3a8a">🎙️ STT ⇄ TTS · 발음가이드 · 인터럽트 · DTMF</text>
+      <text x="360" y="136" text-anchor="middle" font-size="9.5" fill="#1e40af">Bot 평면 설정: voice / greeting / 인터럽트 정책 / 발음 사전 / DTMF 키매핑</text>
+
+      <line x1="360" y1="156" x2="360" y2="172" stroke="#475569" stroke-width="1.5" marker-end="url(#arrM)"/>
+
+      <!-- Layer 3: Session orchestration -->
+      <rect x="40" y="172" width="640" height="92" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="60" y="196" font-size="10" font-weight="700" fill="#f59e0b">L3 세션 오케스트레이션</text>
+      <rect x="60" y="208" width="180" height="44" rx="8" fill="#fff" stroke="#f59e0b"/>
+      <text x="150" y="226" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">VoiceSession</text>
+      <text x="150" y="242" text-anchor="middle" font-size="9" fill="#9a3412">WebSocket 라이프사이클</text>
+      <rect x="270" y="208" width="180" height="44" rx="8" fill="#fff" stroke="#f59e0b"/>
+      <text x="360" y="226" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">Dispatcher</text>
+      <text x="360" y="242" text-anchor="middle" font-size="9" fill="#9a3412">매 턴 첫 단계 · global 룰 평가</text>
+      <rect x="480" y="208" width="180" height="44" rx="8" fill="#fff" stroke="#f59e0b"/>
+      <text x="570" y="226" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">Frontdoor</text>
+      <text x="570" y="242" text-anchor="middle" font-size="9" fill="#9a3412">Skill 간 핸드오프 라우팅</text>
+
+      <line x1="360" y1="264" x2="360" y2="280" stroke="#475569" stroke-width="1.5" marker-end="url(#arrM)"/>
+
+      <!-- Layer 4: Graph executor -->
+      <rect x="40" y="280" width="640" height="100" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="60" y="304" font-size="10" font-weight="700" fill="#16a34a">L4 그래프 실행 엔진</text>
+      <text x="360" y="304" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">GraphExecutor — 노드 타입별 핸들러</text>
+      <rect x="60" y="316" width="105" height="28" rx="5" fill="#fff" stroke="#16a34a"/><text x="112" y="334" text-anchor="middle" font-size="9" fill="#15803d">conversation→LLM</text>
+      <rect x="175" y="316" width="105" height="28" rx="5" fill="#fff" stroke="#16a34a"/><text x="227" y="334" text-anchor="middle" font-size="9" fill="#15803d">extraction→JSON</text>
+      <rect x="290" y="316" width="100" height="28" rx="5" fill="#fff" stroke="#16a34a"/><text x="340" y="334" text-anchor="middle" font-size="9" fill="#15803d">condition→CEL</text>
+      <rect x="400" y="316" width="80" height="28" rx="5" fill="#fff" stroke="#16a34a"/><text x="440" y="334" text-anchor="middle" font-size="9" fill="#15803d">api→HTTP</text>
+      <rect x="490" y="316" width="80" height="28" rx="5" fill="#fff" stroke="#16a34a"/><text x="530" y="334" text-anchor="middle" font-size="9" fill="#15803d">tool→invoke</text>
+      <rect x="580" y="316" width="80" height="28" rx="5" fill="#fff" stroke="#16a34a"/><text x="620" y="334" text-anchor="middle" font-size="9" fill="#15803d">transfer→Frontdoor</text>
+      <text x="360" y="364" text-anchor="middle" font-size="9.5" font-style="italic" fill="#15803d">프롬프트 모드 = 1-노드 그래프 (fast path · LLM 1콜)</text>
+
+      <line x1="360" y1="380" x2="360" y2="396" stroke="#475569" stroke-width="1.5" marker-end="url(#arrM)"/>
+
+      <!-- Layer 5: Domain (assets + variable) -->
+      <rect x="40" y="396" width="640" height="160" rx="10" fill="#fff" stroke="#0f172a" stroke-width="1.5"/>
+      <text x="60" y="420" font-size="10" font-weight="700" fill="#0f172a">L5 도메인 — 자산 + 변수</text>
+
+      <!-- Skill aggregate (highlight) -->
+      <rect x="60" y="430" width="240" height="110" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+      <text x="180" y="450" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">Skill (aggregate)</text>
+      <text x="180" y="468" text-anchor="middle" font-size="9" fill="#15803d">id · name · version · mode</text>
+      <rect x="74" y="478" width="100" height="22" rx="4" fill="#fff" stroke="#16a34a"/>
+      <text x="124" y="494" text-anchor="middle" font-size="8.5" fill="#14532d">Graph (nodes·edges)</text>
+      <rect x="184" y="478" width="100" height="22" rx="4" fill="#fff" stroke="#f59e0b"/>
+      <text x="234" y="494" text-anchor="middle" font-size="8.5" fill="#92400e">globals[]</text>
+      <text x="180" y="518" text-anchor="middle" font-size="9" fill="#475569">refs ↓</text>
+      <text x="180" y="532" text-anchor="middle" font-size="8.5" fill="#475569">persona_id · knowledge_ids[] · tool_ids[]</text>
+
+      <!-- Other assets -->
+      <rect x="318" y="430" width="100" height="50" rx="6" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="368" y="450" text-anchor="middle" font-size="10" font-weight="700" fill="#1e3a8a">Persona</text>
+      <text x="368" y="466" text-anchor="middle" font-size="8.5" fill="#1e40af">정체성·말투</text>
+
+      <rect x="318" y="490" width="100" height="50" rx="6" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="368" y="510" text-anchor="middle" font-size="10" font-weight="700" fill="#1e3a8a">Knowledge</text>
+      <text x="368" y="526" text-anchor="middle" font-size="8.5" fill="#1e40af">text·web·file (RAG)</text>
+
+      <rect x="430" y="430" width="100" height="50" rx="6" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="480" y="450" text-anchor="middle" font-size="10" font-weight="700" fill="#1e3a8a">Tool</text>
+      <text x="480" y="466" text-anchor="middle" font-size="8.5" fill="#1e40af">REST + builtin</text>
+
+      <rect x="430" y="490" width="100" height="50" rx="6" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="480" y="510" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">VariableContext</text>
+      <text x="480" y="526" text-anchor="middle" font-size="8.5" fill="#9a3412">dyn·sys·extracted</text>
+
+      <!-- Bot wrapper -->
+      <rect x="540" y="430" width="120" height="110" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <text x="600" y="450" text-anchor="middle" font-size="10" font-weight="700" fill="#0f172a">Bot</text>
+      <text x="600" y="466" text-anchor="middle" font-size="8.5" fill="#475569">운영 단위</text>
+      <line x1="554" y1="474" x2="646" y2="474" stroke="#cbd5e1"/>
+      <text x="600" y="488" text-anchor="middle" font-size="8" fill="#64748b">voice</text>
+      <text x="600" y="502" text-anchor="middle" font-size="8" fill="#64748b">greeting</text>
+      <text x="600" y="516" text-anchor="middle" font-size="8" fill="#64748b">llm_model</text>
+      <text x="600" y="530" text-anchor="middle" font-size="8" fill="#64748b">+ skill_ids[]</text>
+
+      <!-- Layer 6: Infra -->
+      <rect x="40" y="572" width="640" height="50" rx="10" fill="#f1f5f9" stroke="#64748b"/>
+      <text x="60" y="596" font-size="10" font-weight="700" fill="#64748b">L6 인프라</text>
+      <text x="360" y="596" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">LLM · STT · TTS · Vector DB · WebSocket · SIP gateway</text>
+      <text x="360" y="612" text-anchor="middle" font-size="9" fill="#475569">의존성 역전(ports) — 도메인은 인프라를 모른다</text>
+
+      <!-- Post-call (sidebar) -->
+      <rect x="40" y="638" width="640" height="44" rx="10" fill="#fff" stroke="#94a3b8" stroke-dasharray="3,3"/>
+      <text x="360" y="660" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">📊 Post-call · 요약·태그·웹훅·CSV export</text>
+      <text x="360" y="676" text-anchor="middle" font-size="9" fill="#475569">통화 종료 후 별도 잡 — 분석 대시보드 / 인시던트 알림</text>
+    </svg>
+  </div>
+  <p class="caption">L1~L6의 6개 레이어. 굵은 박스는 <b>4 자산</b>, 점선 박스는 Bot의 <b>평면 설정</b>. 가운데 노란 레이어(L3)가 vox와 우리 모두에서 가장 차별화되는 부분.</p>
+</section>
+
+<!-- ============ BIG PICTURE ============ -->
+<section class="page">
+  <h2>1. 큰 그림 — 통화 한 통의 전체 흐름</h2>
+  <p class="muted">전화 채널 → 음성 변환 → 에이전트 두뇌 → 통화 후 분석. <b>진짜 복잡함은 가운데 "두뇌"에 있다.</b></p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 460" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-width:680px">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+        </marker>
+      </defs>
+
+      <!-- Channel -->
+      <rect x="60" y="20" width="600" height="60" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+      <text x="360" y="48" text-anchor="middle" font-size="14" font-weight="700" fill="#0f172a">📞 전화 채널</text>
+      <text x="360" y="68" text-anchor="middle" font-size="11" fill="#475569">전화번호 / SIP / SDK (JS · React · Flutter · Python)</text>
+
+      <line x1="360" y1="80" x2="360" y2="100" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Voice -->
+      <rect x="200" y="100" width="320" height="56" rx="10" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="360" y="125" text-anchor="middle" font-size="13" font-weight="700" fill="#1e3a8a">🎙️ 음성 계층 · STT ⇄ TTS</text>
+      <text x="360" y="143" text-anchor="middle" font-size="10" fill="#1e40af">발음가이드 · 인터럽트 · 첫메시지 · DTMF</text>
+
+      <line x1="360" y1="156" x2="360" y2="176" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Brain -->
+      <rect x="80" y="176" width="560" height="170" rx="12" fill="#fefce8" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="360" y="200" text-anchor="middle" font-size="14" font-weight="700" fill="#92400e">🧠 에이전트 두뇌</text>
+
+      <rect x="110" y="216" width="220" height="50" rx="8" fill="#fff" stroke="#2563eb"/>
+      <text x="220" y="237" text-anchor="middle" font-size="11" font-weight="700" fill="#1e40af">모드 A · 프롬프트</text>
+      <text x="220" y="255" text-anchor="middle" font-size="9.5" fill="#475569">프롬프트 1개 + 지식 + 도구</text>
+
+      <rect x="390" y="216" width="220" height="50" rx="8" fill="#fff" stroke="#16a34a"/>
+      <text x="500" y="237" text-anchor="middle" font-size="11" font-weight="700" fill="#15803d">모드 B · 플로우</text>
+      <text x="500" y="255" text-anchor="middle" font-size="9.5" fill="#475569">노드 그래프 (11종 빌딩블록)</text>
+
+      <rect x="110" y="280" width="500" height="50" rx="8" fill="#fff5e6" stroke="#f59e0b" stroke-dasharray="3,3"/>
+      <text x="360" y="300" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">공통 — 변수 컨텍스트 (dynamic · system · extracted)</text>
+      <text x="360" y="318" text-anchor="middle" font-size="9.5" fill="#9a3412">모든 프롬프트/노드에서 {{var}}로 참조</text>
+
+      <line x1="360" y1="346" x2="360" y2="366" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Post call -->
+      <rect x="160" y="366" width="400" height="56" rx="10" fill="#f1f5f9" stroke="#64748b"/>
+      <text x="360" y="390" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">📊 Post-call · 요약 · 태그</text>
+      <text x="360" y="408" text-anchor="middle" font-size="10" fill="#475569">웹훅 · 분석 대시보드 · CSV export</text>
+    </svg>
+  </div>
+  <p class="caption">한 통화는 4개 레이어를 순차로 통과한다. 음성↔텍스트 변환은 컨테이너에 불과.</p>
+</section>
+
+<!-- ============ TWO MODES ============ -->
+<section class="page">
+  <h2>2. 두 가지 에이전트 모드</h2>
+
+  <div class="grid-2 nobreak">
+    <div class="card prompt">
+      <h4><span class="badge prompt">모드 A</span> 프롬프트 에이전트</h4>
+      <p>한 덩어리의 프롬프트로 봇 정의. LLM이 알아서 분기·도구 호출.</p>
+
+      <div class="svg-wrap" style="margin:6pt 0">
+        <svg viewBox="0 0 300 200" xmlns="http://www.w3.org/2000/svg" width="100%">
+          <rect x="20" y="20" width="260" height="120" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+          <text x="150" y="44" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">System Prompt</text>
+          <text x="150" y="62" text-anchor="middle" font-size="9.5" fill="#1e40af">"당신은 △△치과의 친절한 안내원…"</text>
+          <line x1="35" y1="76" x2="265" y2="76" stroke="#93c5fd" stroke-dasharray="2,2"/>
+          <text x="150" y="92" text-anchor="middle" font-size="9.5" fill="#1e40af">+ 지식 (RAG)</text>
+          <text x="150" y="108" text-anchor="middle" font-size="9.5" fill="#1e40af">+ 도구 (function call)</text>
+          <text x="150" y="124" text-anchor="middle" font-size="9.5" fill="#1e40af">+ globals (인터럽트)</text>
+          <path d="M150 140 L150 165" stroke="#475569" stroke-width="1.5" marker-end="url(#arr2)"/>
+          <text x="150" y="186" text-anchor="middle" font-size="10" fill="#0f172a" font-weight="600">매 턴마다 같은 프롬프트 + history → LLM</text>
+          <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+        </svg>
+      </div>
+      <p class="small"><b>적합:</b> 친절한 상담, FAQ, 일반 응대</p>
+      <p class="small"><b>장점:</b> 빠르게 만듦, 표현력 자유</p>
+      <p class="small"><b>단점:</b> "필드 누락" 같은 LLM 실수 종종 발생</p>
+    </div>
+
+    <div class="card flow">
+      <h4><span class="badge flow">모드 B</span> 플로우 에이전트</h4>
+      <p>노드를 선으로 잇는 그래프. 모든 분기·변수·전이를 명시.</p>
+
+      <div class="svg-wrap" style="margin:6pt 0">
+        <svg viewBox="0 0 300 200" xmlns="http://www.w3.org/2000/svg" width="100%">
+          <circle cx="40" cy="100" r="14" fill="#dcfce7" stroke="#16a34a"/>
+          <text x="40" y="104" text-anchor="middle" font-size="9" font-weight="700" fill="#15803d">시작</text>
+
+          <rect x="70" y="80" width="58" height="40" rx="6" fill="#fff" stroke="#16a34a"/>
+          <text x="99" y="95" text-anchor="middle" font-size="9" font-weight="700" fill="#15803d">대화</text>
+          <text x="99" y="110" text-anchor="middle" font-size="8" fill="#475569">인사·용건</text>
+
+          <rect x="138" y="80" width="62" height="40" rx="6" fill="#fff" stroke="#16a34a"/>
+          <text x="169" y="95" text-anchor="middle" font-size="9" font-weight="700" fill="#15803d">추출</text>
+          <text x="169" y="110" text-anchor="middle" font-size="8" fill="#475569">intent</text>
+
+          <polygon points="220,80 250,100 220,120 190,100" fill="#fff" stroke="#16a34a"/>
+          <text x="220" y="104" text-anchor="middle" font-size="8.5" font-weight="700" fill="#15803d">분기</text>
+
+          <rect x="232" y="40" width="50" height="34" rx="6" fill="#fff" stroke="#16a34a"/>
+          <text x="257" y="61" text-anchor="middle" font-size="8.5" fill="#15803d">예약 플로우</text>
+
+          <rect x="232" y="130" width="50" height="34" rx="6" fill="#fff" stroke="#16a34a"/>
+          <text x="257" y="151" text-anchor="middle" font-size="8.5" fill="#15803d">FAQ 응대</text>
+
+          <line x1="54" y1="100" x2="68" y2="100" stroke="#475569"/>
+          <line x1="128" y1="100" x2="136" y2="100" stroke="#475569"/>
+          <line x1="200" y1="100" x2="208" y2="100" stroke="#475569"/>
+          <line x1="240" y1="92" x2="240" y2="74" stroke="#475569"/>
+          <line x1="240" y1="108" x2="240" y2="130" stroke="#475569"/>
+
+          <text x="150" y="190" text-anchor="middle" font-size="9" font-style="italic" fill="#92400e">⟦global: "상담사" → 전환⟧</text>
+        </svg>
+      </div>
+      <p class="small"><b>적합:</b> 신청서, 결제, 본인확인 (SLA 중요한 곳)</p>
+      <p class="small"><b>장점:</b> 결정성·디버깅 쉬움 ("어느 노드에서 막혔는지" 보임)</p>
+      <p class="small"><b>단점:</b> 그리는 시간이 든다</p>
+    </div>
+  </div>
+
+  <h3>비교표</h3>
+  <table>
+    <tr><th></th><th>프롬프트</th><th>플로우</th></tr>
+    <tr><td>정의 방법</td><td>큰 프롬프트 1개</td><td>노드 그래프</td></tr>
+    <tr><td>분기 처리</td><td>LLM이 알아서</td><td>condition 노드 (명시)</td></tr>
+    <tr><td>변수/슬롯</td><td>LLM이 자유롭게</td><td>extraction 노드 (강제)</td></tr>
+    <tr><td>턴당 LLM 호출</td><td>1회</td><td>여러 번 (extract+condition+conv)</td></tr>
+    <tr><td>비용·지연</td><td>낮음</td><td>높음</td></tr>
+    <tr><td>통제력</td><td>낮음</td><td>높음</td></tr>
+    <tr><td>디버깅</td><td>블랙박스</td><td>노드 단위 추적</td></tr>
+  </table>
+</section>
+
+<!-- ============ 11 NODES ============ -->
+<section class="page">
+  <h2>3. 11 노드 — 플로우 모드 빌딩블록</h2>
+  <p class="muted">각 노드는 "받는 입력 → 하는 일 → 다음으로 넘기는 것"이 정해져 있다. 5개 카테고리로 묶어 외우면 쉽다.</p>
+
+  <div class="grid-3 nobreak" style="margin-top:14pt">
+    <div class="card flow">
+      <h4>A. 흐름 제어 <span class="small muted">(3종)</span></h4>
+      <p class="small"><b>begin</b> — 진입점, 첫 메시지 발화</p>
+      <p class="small"><b>end</b> — 종료점, 종료 사유 기록</p>
+      <p class="small"><b>global</b> — 어디서든 트리거되는 인터럽트 핸들러</p>
+    </div>
+    <div class="card flow">
+      <h4>B. 대화 <span class="small muted">(1종 · 가장 중요)</span></h4>
+      <p class="small"><b>conversation</b> — 여러 turn을 묶은 미니 대화 단위. 이 노드만 LLM을 직접 호출.</p>
+      <p class="small muted" style="margin-top:6pt">노드 안에 prompt + transitions(다음으로 가는 조건) 정의.</p>
+    </div>
+    <div class="card flow">
+      <h4>C. 데이터 처리 <span class="small muted">(3종)</span></h4>
+      <p class="small"><b>extraction</b> — 발화에서 슬롯 채우기 (예: "내일 3시"→date·time)</p>
+      <p class="small"><b>condition</b> — 변수 비교로 분기 (age≥19 등)</p>
+      <p class="small"><b>api</b> — REST 호출, 응답을 변수에 저장</p>
+    </div>
+    <div class="card flow">
+      <h4>D. 도구 호출 <span class="small muted">(1종)</span></h4>
+      <p class="small"><b>tool</b> — 등록한 API 도구 또는 내장 도구(end-call, sms, dtmf, transfer-call, transfer-agent)를 명시적으로 실행.</p>
+    </div>
+    <div class="card flow">
+      <h4>E. 외부 채널 <span class="small muted">(3종)</span></h4>
+      <p class="small"><b>transfer-call</b> — 사람 상담사 연결 (SIP refer)</p>
+      <p class="small"><b>transfer-agent</b> — <b>다른 에이전트로 위임</b> ← 멀티 에이전트의 핵심</p>
+      <p class="small"><b>send-sms</b> — 문자 발송</p>
+    </div>
+    <div class="card accent">
+      <h4>💡 두 가지 핵심 <span class="small muted">(카테고리 아님 · 인사이트)</span></h4>
+      <p class="small"><b>global 노드</b>는 어느 상태에서든 발동. "상담사 바꿔줘" 같은 인터럽트 표현용.</p>
+      <p class="small"><b>transfer-agent</b>는 단일 거대 봇 대신 <b>전문 봇 체인</b>을 가능케 한다.</p>
+    </div>
+  </div>
+  <p class="caption">A~E 5개 카테고리의 노드 합 = 3+1+3+1+3 = <b>11종</b>. DTMF는 노드가 아니라 conversation 설정 + send-dtmf builtin tool.</p>
+</section>
+
+<!-- ============ 치과 예시 - 프롬프트 ============ -->
+<section class="page">
+  <h2>4. 구체 예시 — △△치과 예약봇 (1) 프롬프트 버전</h2>
+  <p class="muted">시나리오: 인사 → 예약/문의 분기 → 예약이면 [날짜·시간·증상] 받기 → 등록 → 확인 SMS → 종료. "상담사" 발화는 어디서든 사람 연결.</p>
+
+  <div class="card prompt nobreak" style="margin-top:14pt">
+    <h4><span class="badge prompt">프롬프트 에이전트</span> — 한 덩어리로 푼다</h4>
+
+    <div class="svg-wrap">
+      <svg viewBox="0 0 620 280" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:600px">
+        <rect x="20" y="20" width="580" height="180" rx="12" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+        <text x="40" y="44" font-size="11" font-weight="700" fill="#1e3a8a">System Prompt</text>
+        <text x="40" y="64" font-size="10" fill="#0f172a">당신은 △△치과 안내원이다. 다음 순서로 진행하라:</text>
+        <text x="56" y="82" font-size="9.5" fill="#334155">1. 인사하고 예약/문의 의도를 물어라</text>
+        <text x="56" y="98" font-size="9.5" fill="#334155">2. 예약이면 [날짜, 시간, 증상] 3개를 모두 받아라</text>
+        <text x="56" y="114" font-size="9.5" fill="#334155">3. 다 받으면 register_appointment 도구 호출</text>
+        <text x="56" y="130" font-size="9.5" fill="#334155">4. 성공하면 send_sms 도구로 확인 문자</text>
+        <text x="56" y="146" font-size="9.5" fill="#334155">5. 사용자가 "상담사" 말하면 즉시 transfer_call</text>
+
+        <line x1="40" y1="160" x2="580" y2="160" stroke="#93c5fd" stroke-dasharray="2,2"/>
+        <text x="40" y="178" font-size="10" font-weight="600" fill="#1e3a8a">Tools:</text>
+        <text x="100" y="178" font-size="10" fill="#334155">register_appointment · send_sms · transfer_call</text>
+        <text x="40" y="194" font-size="10" font-weight="600" fill="#1e3a8a">Knowledge:</text>
+        <text x="120" y="194" font-size="10" fill="#334155">진료시간.pdf · 가격표.pdf · 위치.pdf</text>
+
+        <path d="M310 200 L310 226" stroke="#2563eb" stroke-width="2" marker-end="url(#arrB)"/>
+        <rect x="180" y="226" width="260" height="40" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+        <text x="310" y="246" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">LLM (매 턴 호출)</text>
+        <text x="310" y="262" text-anchor="middle" font-size="9" fill="#1e40af">prompt + history + tool calls</text>
+        <defs><marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker></defs>
+      </svg>
+    </div>
+  </div>
+
+  <div class="quote">
+    ⚠️ LLM 한 번 호출에 모든 판단을 맡김. <b>빠르게 만들 수 있지만</b>, "증상을 안 물어봤네" 같은 누락이 가끔 발생.
+  </div>
+</section>
+
+<!-- ============ 치과 예시 - 플로우 ============ -->
+<section class="page">
+  <h2>4. 구체 예시 — △△치과 예약봇 (2) 플로우 버전</h2>
+
+  <div class="svg-wrap" style="margin:8pt 0">
+    <svg viewBox="0 0 700 600" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <defs>
+        <marker id="arrG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#15803d"/>
+        </marker>
+        <marker id="arrR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+        </marker>
+      </defs>
+
+      <!-- Begin -->
+      <ellipse cx="350" cy="30" rx="46" ry="20" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="35" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">begin</text>
+      <line x1="350" y1="50" x2="350" y2="70" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+      <!-- Conv 인사 -->
+      <rect x="240" y="70" width="220" height="48" rx="8" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="90" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">conversation</text>
+      <text x="350" y="106" text-anchor="middle" font-size="9.5" fill="#475569">인사 + 용건 묻기</text>
+      <line x1="350" y1="118" x2="350" y2="138" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+      <!-- Extract intent -->
+      <rect x="240" y="138" width="220" height="48" rx="8" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="158" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">extraction</text>
+      <text x="350" y="174" text-anchor="middle" font-size="9.5" fill="#475569">intent ∈ {예약, 문의, 기타}</text>
+
+      <!-- Branch -->
+      <line x1="350" y1="186" x2="350" y2="200" stroke="#15803d"/>
+      <line x1="150" y1="200" x2="550" y2="200" stroke="#15803d"/>
+      <line x1="150" y1="200" x2="150" y2="218" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+      <line x1="350" y1="200" x2="350" y2="218" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+      <line x1="550" y1="200" x2="550" y2="218" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+      <text x="170" y="214" font-size="9" font-weight="600" fill="#15803d">예약</text>
+      <text x="370" y="214" font-size="9" font-weight="600" fill="#15803d">문의</text>
+      <text x="570" y="214" font-size="9" font-weight="600" fill="#15803d">기타</text>
+
+      <!-- 예약 branch -->
+      <rect x="80" y="218" width="140" height="40" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="150" y="238" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">conv: 날짜 묻기</text>
+      <line x1="150" y1="258" x2="150" y2="270" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+      <rect x="80" y="270" width="140" height="36" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="150" y="290" text-anchor="middle" font-size="10" fill="#14532d">extract: date</text>
+      <line x1="150" y1="306" x2="150" y2="318" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+      <rect x="80" y="318" width="140" height="36" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="150" y="338" text-anchor="middle" font-size="10" fill="#14532d">conv + extract: time</text>
+      <line x1="150" y1="354" x2="150" y2="366" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+      <rect x="80" y="366" width="140" height="36" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="150" y="386" text-anchor="middle" font-size="10" fill="#14532d">conv + extract: symptom</text>
+      <line x1="150" y1="402" x2="150" y2="414" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+      <rect x="60" y="414" width="180" height="46" rx="6" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="150" y="432" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">api: POST /appointments</text>
+      <text x="150" y="448" text-anchor="middle" font-size="9" fill="#9a3412">body=&#123;date, time, symptom&#125;</text>
+
+      <!-- 분기 OK/FAIL -->
+      <line x1="150" y1="460" x2="150" y2="475" stroke="#15803d"/>
+      <polygon points="150,475 175,488 150,500 125,488" fill="#fff" stroke="#16a34a"/>
+      <text x="150" y="493" text-anchor="middle" font-size="9" font-weight="700" fill="#15803d">200?</text>
+
+      <line x1="125" y1="488" x2="60" y2="488" stroke="#15803d"/>
+      <line x1="60" y1="488" x2="60" y2="510" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+      <text x="80" y="484" font-size="9" font-weight="600" fill="#15803d">OK</text>
+      <rect x="10" y="510" width="100" height="30" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="60" y="530" text-anchor="middle" font-size="10" fill="#14532d">send-sms</text>
+      <line x1="60" y1="540" x2="60" y2="555" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+      <line x1="175" y1="488" x2="240" y2="488" stroke="#dc2626"/>
+      <line x1="240" y1="488" x2="240" y2="510" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrR)"/>
+      <text x="200" y="484" font-size="9" font-weight="600" fill="#dc2626">FAIL</text>
+      <rect x="190" y="510" width="100" height="30" rx="6" fill="#fff" stroke="#dc2626"/>
+      <text x="240" y="530" text-anchor="middle" font-size="10" fill="#7f1d1d">conv: 재시도</text>
+
+      <!-- 문의 branch -->
+      <rect x="280" y="218" width="140" height="40" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="350" y="238" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">conv: FAQ 답변</text>
+      <line x1="350" y1="258" x2="350" y2="276" stroke="#15803d" stroke-width="1.5" marker-end="url(#arrG)"/>
+      <ellipse cx="350" cy="290" rx="36" ry="16" fill="#f1f5f9" stroke="#64748b"/>
+      <text x="350" y="295" text-anchor="middle" font-size="10" font-weight="700" fill="#0f172a">end</text>
+
+      <!-- 기타 branch -->
+      <rect x="480" y="218" width="140" height="40" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="550" y="238" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">conv: 재질문</text>
+      <path d="M620 238 Q670 238 670 158 Q670 90 460 94" stroke="#15803d" stroke-width="2" stroke-dasharray="4,3" fill="none" marker-end="url(#arrG)"/>
+      <text x="675" y="180" text-anchor="middle" font-size="10" font-weight="700" fill="#15803d">loop</text>
+
+      <!-- end on success -->
+      <ellipse cx="60" cy="572" rx="32" ry="14" fill="#f1f5f9" stroke="#64748b"/>
+      <text x="60" y="576" text-anchor="middle" font-size="10" font-weight="700" fill="#0f172a">end</text>
+
+      <!-- Global -->
+      <rect x="430" y="540" width="260" height="46" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-dasharray="4,3"/>
+      <text x="560" y="558" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">⟦ global ⟧</text>
+      <text x="560" y="574" text-anchor="middle" font-size="9" fill="#9a3412">"상담사" 발화 → transfer-call</text>
+    </svg>
+  </div>
+
+  <div class="quote">
+    ✅ 분기·검증·재시도 모두 명시적. <b>누락 안 생기지만</b> 그리는 시간이 더 든다. SLA 중요한 도메인(결제·본인확인)은 플로우 강제.
+  </div>
+</section>
+
+<!-- ============ 한 턴 사이클 ============ -->
+<section class="page">
+  <h2>4-3. 한 턴(turn)이 어떻게 도는가</h2>
+  <p class="muted">사용자가 "내일 3시요"라고 발화한 순간. 플로우 모드 기준 5단계 사이클.</p>
+
+  <div class="svg-wrap" style="margin:8pt 0">
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <defs><marker id="arrT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+
+      <rect x="20" y="20" width="660" height="40" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+      <text x="40" y="44" font-size="11" fill="#0f172a">👤 사용자: <tspan font-weight="700">"내일 3시요"</tspan></text>
+      <line x1="350" y1="60" x2="350" y2="74" stroke="#475569" stroke-width="1.5" marker-end="url(#arrT)"/>
+
+      <rect x="180" y="74" width="340" height="36" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="350" y="97" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">① STT → "내일 3시요"</text>
+      <line x1="350" y1="110" x2="350" y2="124" stroke="#475569" stroke-width="1.5" marker-end="url(#arrT)"/>
+
+      <rect x="100" y="124" width="500" height="44" rx="8" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="350" y="143" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">② global 노드 매칭 체크</text>
+      <text x="350" y="160" text-anchor="middle" font-size="9.5" fill="#9a3412">"상담사" 포함? → 아니오. 통과.</text>
+      <line x1="350" y1="168" x2="350" y2="182" stroke="#475569" stroke-width="1.5" marker-end="url(#arrT)"/>
+
+      <rect x="60" y="182" width="580" height="58" rx="8" fill="#fff" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="202" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">③ 현재 노드 = [extract: date] 실행</text>
+      <text x="350" y="219" text-anchor="middle" font-size="9.5" fill="#334155">LLM(JSON 모드): "내일 3시요" → &#123;"date": "내일", "time": "15:00"&#125;</text>
+      <text x="350" y="234" text-anchor="middle" font-size="9.5" fill="#334155">변수 컨텍스트.date·time 갱신</text>
+      <line x1="350" y1="240" x2="350" y2="254" stroke="#475569" stroke-width="1.5" marker-end="url(#arrT)"/>
+
+      <rect x="120" y="254" width="460" height="44" rx="8" fill="#fff" stroke="#16a34a"/>
+      <text x="350" y="273" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">④ transition 평가</text>
+      <text x="350" y="290" text-anchor="middle" font-size="9.5" fill="#334155">date ≠ null → 다음 노드 = [conv: 증상 묻기]</text>
+      <line x1="350" y1="298" x2="350" y2="312" stroke="#475569" stroke-width="1.5" marker-end="url(#arrT)"/>
+
+      <rect x="80" y="312" width="540" height="48" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="350" y="332" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">⑤ 다음 노드 prompt 실행 → TTS</text>
+      <text x="350" y="350" text-anchor="middle" font-size="9.5" fill="#1e40af">"내일 오후 3시 맞으시죠? 어떤 증상으로 오시나요?"</text>
+    </svg>
+  </div>
+  <p class="caption">이 다섯 단계가 <b>매 턴마다</b> 반복된다.</p>
+</section>
+
+<!-- ============ 변수 시스템 ============ -->
+<section class="page">
+  <h2>5. 변수 시스템 — 3종 출처</h2>
+  <p class="muted">vox 에이전트의 <b>핵심 도메인 모델</b> — 별도 자산처럼 다룬다. 프롬프트뿐 아니라 condition·API body·SMS 본문에서 모두 사용.</p>
+
+  <div class="svg-wrap" style="margin:8pt 0">
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <defs><marker id="arrV" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+      <rect x="60" y="40" width="580" height="200" rx="14" fill="#fffbeb" stroke="#f59e0b" stroke-width="2"/>
+      <text x="350" y="68" text-anchor="middle" font-size="13" font-weight="700" fill="#92400e">변수 컨텍스트 (한 통화)</text>
+
+      <rect x="90" y="84" width="170" height="140" rx="10" fill="#fff" stroke="#f59e0b"/>
+      <text x="175" y="106" text-anchor="middle" font-size="11" font-weight="700" fill="#9a3412">① dynamic</text>
+      <text x="175" y="124" text-anchor="middle" font-size="9.5" fill="#475569">통화 시작 시 주입</text>
+      <line x1="100" y1="134" x2="250" y2="134" stroke="#fde68a"/>
+      <text x="100" y="150" font-size="9" fill="#334155">customer_name</text>
+      <text x="100" y="166" font-size="9" fill="#334155">phone</text>
+      <text x="100" y="184" font-size="9" font-style="italic" fill="#64748b">출처:</text>
+      <text x="100" y="200" font-size="9" fill="#64748b">SDK · 웹훅 · 캠페인</text>
+
+      <rect x="265" y="84" width="170" height="140" rx="10" fill="#fff" stroke="#f59e0b"/>
+      <text x="350" y="106" text-anchor="middle" font-size="11" font-weight="700" fill="#9a3412">② system</text>
+      <text x="350" y="124" text-anchor="middle" font-size="9.5" fill="#475569">시스템이 자동으로 채움</text>
+      <line x1="275" y1="134" x2="425" y2="134" stroke="#fde68a"/>
+      <text x="275" y="150" font-size="9" fill="#334155">call_id</text>
+      <text x="275" y="166" font-size="9" fill="#334155">started_at</text>
+      <text x="275" y="182" font-size="9" fill="#334155">caller_number</text>
+      <text x="275" y="198" font-size="9" font-style="italic" fill="#64748b">자동 주입</text>
+
+      <rect x="440" y="84" width="170" height="140" rx="10" fill="#fff" stroke="#f59e0b"/>
+      <text x="525" y="106" text-anchor="middle" font-size="11" font-weight="700" fill="#9a3412">③ extracted</text>
+      <text x="525" y="124" text-anchor="middle" font-size="9.5" fill="#475569">extraction 노드가 채움</text>
+      <line x1="450" y1="134" x2="600" y2="134" stroke="#fde68a"/>
+      <text x="450" y="150" font-size="9" fill="#334155">date</text>
+      <text x="450" y="166" font-size="9" fill="#334155">time</text>
+      <text x="450" y="182" font-size="9" fill="#334155">symptom</text>
+      <text x="450" y="198" font-size="9" font-style="italic" fill="#64748b">대화 중 채워짐</text>
+
+      <line x1="350" y1="240" x2="350" y2="260" stroke="#475569" stroke-width="2" marker-end="url(#arrV)"/>
+
+      <rect x="120" y="260" width="460" height="80" rx="10" fill="#fff" stroke="#475569" stroke-dasharray="3,3"/>
+      <text x="350" y="284" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">모든 prompt · 노드 · 조건식 · API · SMS 에서</text>
+      <text x="350" y="306" text-anchor="middle" font-size="13" font-weight="700" fill="#1e3a8a" font-family="SF Mono, monospace">&#123;&#123;변수명&#125;&#125;</text>
+      <text x="350" y="326" text-anchor="middle" font-size="10" fill="#475569">예: "&#123;&#123;customer_name&#125;&#125;님, 안녕하세요"</text>
+    </svg>
+  </div>
+</section>
+
+<!-- ============ 멀티 에이전트 + 모드 전환 ============ -->
+<section class="page">
+  <h2>6. 멀티 에이전트 · 한 통화 안에서 모드 전환</h2>
+  <p class="muted"><span class="kbd">transfer-agent</span>는 <b>노드이자 동시에 builtin tool</b>. 두 모드 모두 다른 모드 에이전트를 호출 가능 → 통화 한 통 안에서 자연스러운 전환.</p>
+
+  <h3>허브-앤-스포크 패턴 (실전 최다 사용)</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:700px">
+      <defs><marker id="arrH" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+
+      <!-- Hub -->
+      <rect x="240" y="20" width="240" height="80" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+      <text x="360" y="44" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a8a">메인 안내봇 · 프롬프트</text>
+      <text x="360" y="62" text-anchor="middle" font-size="9.5" fill="#1e40af">친절한 응대 · FAQ · 의도 파악</text>
+      <text x="360" y="80" text-anchor="middle" font-size="9" fill="#475569">Tools: transfer_agent("…")</text>
+
+      <!-- Branches -->
+      <line x1="280" y1="100" x2="160" y2="180" stroke="#475569" stroke-width="1.5" marker-end="url(#arrH)"/>
+      <text x="200" y="140" font-size="9" font-weight="600" fill="#475569">"예약할게요"</text>
+      <line x1="360" y1="100" x2="360" y2="180" stroke="#475569" stroke-width="1.5" marker-end="url(#arrH)"/>
+      <text x="370" y="140" font-size="9" font-weight="600" fill="#475569">"결제 문제요"</text>
+      <line x1="440" y1="100" x2="560" y2="180" stroke="#475569" stroke-width="1.5" marker-end="url(#arrH)"/>
+      <text x="500" y="140" font-size="9" font-weight="600" fill="#475569">"취소요"</text>
+
+      <!-- Spokes -->
+      <rect x="60" y="180" width="200" height="80" rx="10" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="160" y="204" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">예약봇 · 플로우</text>
+      <text x="160" y="222" text-anchor="middle" font-size="9" fill="#15803d">노드 8개 · 슬롯필링 강제</text>
+      <text x="160" y="240" text-anchor="middle" font-size="9" fill="#15803d">api로 등록 + send-sms</text>
+
+      <rect x="260" y="180" width="200" height="80" rx="10" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="360" y="204" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">결제봇 · 플로우</text>
+      <text x="360" y="222" text-anchor="middle" font-size="9" fill="#15803d">노드 12개 · 본인확인</text>
+      <text x="360" y="240" text-anchor="middle" font-size="9" fill="#15803d">PG api 호출</text>
+
+      <rect x="460" y="180" width="200" height="80" rx="10" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="560" y="204" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">취소봇 · 프롬프트</text>
+      <text x="560" y="222" text-anchor="middle" font-size="9" fill="#1e40af">단순 응대</text>
+      <text x="560" y="240" text-anchor="middle" font-size="9" fill="#1e40af">tool: cancel_booking</text>
+
+      <!-- Return -->
+      <path d="M160 260 Q360 320 360 100" fill="none" stroke="#94a3b8" stroke-dasharray="4,3"/>
+      <path d="M360 260 L360 100" fill="none" stroke="#94a3b8" stroke-dasharray="4,3"/>
+      <path d="M560 260 Q360 320 360 100" fill="none" stroke="#94a3b8" stroke-dasharray="4,3"/>
+      <text x="360" y="312" text-anchor="middle" font-size="9" fill="#64748b" font-style="italic">완료 후 메인봇 복귀 또는 종료</text>
+
+      <!-- Shared context -->
+      <rect x="80" y="335" width="560" height="36" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-dasharray="3,3"/>
+      <text x="360" y="358" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">⟦ 공유: 변수 컨텍스트 (customer_name · phone · …) ⟧</text>
+    </svg>
+  </div>
+
+  <h3>한 통화 안에서 모드가 두 번 바뀌는 시나리오</h3>
+  <table>
+    <tr><th>턴</th><th>실행</th><th>모드</th></tr>
+    <tr><td class="small muted">1</td><td>사용자 "여보세요" → 메인봇 인사</td><td><span class="pill p">프롬프트</span></td></tr>
+    <tr><td class="small muted">2</td><td>"내일 예약하려고요" → LLM이 <span class="kbd">transfer_agent("예약봇")</span> 호출</td><td><span class="pill p">프롬프트</span> → <span class="pill f">플로우</span></td></tr>
+    <tr><td class="small muted">3-5</td><td>예약봇이 날짜·시간·증상 받기 → api 등록 → SMS</td><td><span class="pill f">플로우</span></td></tr>
+    <tr><td class="small muted">6</td><td>예약봇 end → transfer-agent로 메인봇 복귀</td><td><span class="pill f">플로우</span> → <span class="pill p">프롬프트</span></td></tr>
+    <tr><td class="small muted">7</td><td>"가격이 얼마예요?" → RAG로 답변</td><td><span class="pill p">프롬프트</span></td></tr>
+  </table>
+  <p class="quote">사용자는 모드 차이를 <b>전혀 느끼지 못한다.</b> 백엔드에서 두 번 핸드오프가 일어났을 뿐.</p>
+</section>
+
+<!-- ============ 6-3. 프롬프트 메인 + 분기별 플로우 (통합) ============ -->
+<section class="page">
+  <h2>6-3. 가장 흔한 실전 패턴 — 프롬프트 메인 + 분기별 플로우</h2>
+  <p class="muted">vox 사용자 80%가 쓰는 패턴. <b>메인은 프롬프트로 자유 응대, 구조화 필요한 분기만 플로우.</b> UI는 통합, 데이터는 분리.</p>
+
+  <h3>어드민 UX — 빌더가 보는 한 화면</h3>
+  <div class="svg-wrap nobreak">
+    <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:700px">
+      <!-- Frame -->
+      <rect x="20" y="20" width="680" height="280" rx="10" fill="#fff" stroke="#0f172a" stroke-width="1.5"/>
+
+      <!-- Header -->
+      <rect x="20" y="20" width="680" height="38" rx="10" fill="#f8fafc" stroke="none"/>
+      <text x="40" y="44" font-size="13" font-weight="700" fill="#0f172a">📞 △△치과 안내봇</text>
+      <rect x="600" y="28" width="80" height="22" rx="4" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="640" y="44" text-anchor="middle" font-size="10" font-weight="700" fill="#15803d">배포</text>
+
+      <!-- Section 1: 메인 응대 -->
+      <rect x="40" y="76" width="640" height="74" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="60" y="98" font-size="11" font-weight="700" fill="#1e3a8a">📝 메인 응대</text>
+      <rect x="170" y="84" width="90" height="20" rx="10" fill="#fff" stroke="#2563eb"/>
+      <text x="215" y="98" text-anchor="middle" font-size="9" font-weight="600" fill="#1e3a8a">프롬프트 모드</text>
+      <text x="60" y="120" font-size="10" fill="#1e40af" font-style="italic">"안녕하세요, △△치과입니다. 무엇을 도와드릴까요?"</text>
+      <text x="60" y="138" font-size="9.5" fill="#475569">+ 지식: 진료시간·가격표·위치 / + 도구: cancel_booking</text>
+
+      <!-- Section 2: 의도별 분기 -->
+      <rect x="40" y="166" width="640" height="118" rx="8" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>
+      <text x="60" y="188" font-size="11" font-weight="700" fill="#0f172a">🔀 의도별 분기</text>
+      <rect x="600" y="174" width="80" height="22" rx="4" fill="#f8fafc" stroke="#94a3b8"/>
+      <text x="640" y="190" text-anchor="middle" font-size="10" font-weight="600" fill="#475569">+ 추가</text>
+
+      <!-- Branch 1: 예약 -->
+      <rect x="60" y="206" width="200" height="28" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+      <circle cx="76" cy="220" r="5" fill="#16a34a"/>
+      <text x="92" y="224" font-size="10" font-weight="700" fill="#14532d">예약</text>
+      <text x="130" y="224" font-size="10" fill="#15803d">→ 플로우 (8 노드)</text>
+      <rect x="220" y="212" width="36" height="16" rx="3" fill="#fff" stroke="#16a34a"/>
+      <text x="238" y="224" text-anchor="middle" font-size="8" fill="#15803d">편집</text>
+
+      <!-- Branch 2: 결제 -->
+      <rect x="60" y="240" width="200" height="28" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+      <circle cx="76" cy="254" r="5" fill="#16a34a"/>
+      <text x="92" y="258" font-size="10" font-weight="700" fill="#14532d">결제</text>
+      <text x="130" y="258" font-size="10" fill="#15803d">→ 플로우 (12 노드)</text>
+      <rect x="220" y="246" width="36" height="16" rx="3" fill="#fff" stroke="#16a34a"/>
+      <text x="238" y="258" text-anchor="middle" font-size="8" fill="#15803d">편집</text>
+
+      <!-- Branch 3: 취소 -->
+      <rect x="280" y="206" width="200" height="28" rx="6" fill="#dbeafe" stroke="#2563eb"/>
+      <circle cx="296" cy="220" r="5" fill="#2563eb"/>
+      <text x="312" y="224" font-size="10" font-weight="700" fill="#1e3a8a">취소</text>
+      <text x="350" y="224" font-size="10" fill="#1e40af">→ 프롬프트 (간단)</text>
+      <rect x="440" y="212" width="36" height="16" rx="3" fill="#fff" stroke="#2563eb"/>
+      <text x="458" y="224" text-anchor="middle" font-size="8" fill="#1e40af">편집</text>
+
+      <text x="60" y="284" font-size="9" font-style="italic" fill="#64748b">→ 분기 추가는 "+추가" 버튼 한 번. 작은 분기는 프롬프트, SLA 중요한 분기는 플로우로.</text>
+    </svg>
+  </div>
+
+  <h3>내부 데이터 구조 — Skill 분리 + global 룰</h3>
+  <div class="svg-wrap nobreak">
+    <svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:700px">
+      <defs><marker id="arrR2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+
+      <rect x="20" y="10" width="680" height="32" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-dasharray="4,3"/>
+      <text x="40" y="32" font-size="10" font-weight="700" fill="#0f172a">Bot · △△치과 안내봇</text>
+      <text x="220" y="32" font-size="9" fill="#475569">voice·greeting·llm_model · skill_ids: [메인, 예약, 결제, 취소]</text>
+
+      <rect x="20" y="58" width="320" height="170" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+      <text x="180" y="78" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1e3a8a">Skill: 메인봇 (mode=prompt, 1-노드)</text>
+      <rect x="40" y="88" width="280" height="28" rx="6" fill="#fff" stroke="#2563eb"/>
+      <text x="180" y="106" text-anchor="middle" font-size="9.5" fill="#1e3a8a">conversation: "안녕하세요…"</text>
+      <text x="180" y="134" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">globals[] (라우팅 룰):</text>
+      <rect x="40" y="140" width="280" height="22" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="180" y="154" text-anchor="middle" font-size="8.5" fill="#9a3412">intent=="예약" → transfer-agent("예약")</text>
+      <rect x="40" y="166" width="280" height="22" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="180" y="180" text-anchor="middle" font-size="8.5" fill="#9a3412">intent=="결제" → transfer-agent("결제")</text>
+      <rect x="40" y="192" width="280" height="22" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="180" y="206" text-anchor="middle" font-size="8.5" fill="#9a3412">intent=="취소" → transfer-agent("취소")</text>
+
+      <line x1="340" y1="151" x2="385" y2="100" stroke="#475569" stroke-width="1.5" marker-end="url(#arrR2)"/>
+      <line x1="340" y1="177" x2="385" y2="148" stroke="#475569" stroke-width="1.5" marker-end="url(#arrR2)"/>
+      <line x1="340" y1="203" x2="385" y2="198" stroke="#475569" stroke-width="1.5" marker-end="url(#arrR2)"/>
+
+      <rect x="390" y="80" width="310" height="38" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="410" y="98" font-size="10" font-weight="700" fill="#14532d">Skill: 예약 (mode=flow, 8-노드)</text>
+      <text x="410" y="112" font-size="8.5" fill="#15803d">extract · api · send-sms · …</text>
+
+      <rect x="390" y="128" width="310" height="38" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="410" y="146" font-size="10" font-weight="700" fill="#14532d">Skill: 결제 (mode=flow, 12-노드)</text>
+      <text x="410" y="160" font-size="8.5" fill="#15803d">본인확인 · PG api · …</text>
+
+      <rect x="390" y="176" width="310" height="38" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="410" y="194" font-size="10" font-weight="700" fill="#1e3a8a">Skill: 취소 (mode=prompt, 1-노드)</text>
+      <text x="410" y="208" font-size="8.5" fill="#1e40af">cancel_booking tool</text>
+    </svg>
+  </div>
+
+  <div class="quote nobreak" style="margin-top:8pt">
+    💡 <b>핵심:</b> UI는 통합("메인 + 분기들" 한 화면), 데이터는 분리(Skill 4개). global 룰이 라우팅 담당 → prompt는 자유 응대만, 라우팅 변경 시 prompt 안 건드림.
+  </div>
+</section>
+
+<!-- ============ PART 2 COVER ============ -->
+<section class="page cover" style="background:#fef3c7">
+  <div class="badge accent" style="margin-bottom:18pt">Part 2 · 비판</div>
+  <h1 style="color:#92400e">vox 구조의<br/>문제점</h1>
+  <p class="keymsg" style="max-width:140mm; color:#9a3412">vox는 잘 만들어진 매니지드 플랫폼이지만, 우리가 그대로 따라가면 안 되는 5가지 구조적 한계가 있다. 이 한계가 Part 3 개선안의 출발점.</p>
+  <p class="muted" style="margin-top:30pt"><b>다룰 내용:</b> prompt 라우팅 박힘 · Skill 부재 · 변수 자유형 · 모드 인지부담 · 운영설정 분산</p>
+</section>
+
+<!-- ============ 7. vox 구조의 문제점 ============ -->
+<section class="page">
+  <h2>7. vox가 갖는 5가지 한계</h2>
+  <p class="muted">각 한계 옆에 우리가 어떻게 풀지 한 줄로 요약. 자세한 설계는 Part 3에서.</p>
+
+  <div class="grid-2" style="margin-top:14pt">
+    <div class="card accent nobreak">
+      <h4>① prompt에 라우팅 로직이 박힘</h4>
+      <p class="small"><b>문제:</b> "예약이면 transfer_agent 호출하라" 같은 라우팅 지시를 system prompt에 적어야 함. prompt가 길어지고, 라우팅 변경 시 prompt 수정 필요. 자유 응대 톤과 라우팅 로직이 한 덩어리에 섞임.</p>
+      <p class="small" style="margin-top:6pt; color:#15803d"><b>→ 우리의 해법:</b> global 룰을 별도 영역으로 분리. prompt는 톤·페르소나만 담당, 라우팅은 globals[]가 담당.</p>
+    </div>
+
+    <div class="card accent nobreak">
+      <h4>② 재사용 단위 모호 — Skill 부재</h4>
+      <p class="small"><b>문제:</b> vox는 <b>agent</b>가 최소 단위. 같은 결제 로직을 5개 봇에서 쓰려면 5번 복제해야 함. 복제본 간 drift 발생 → 한 봇 고치면 나머지 4개 누락.</p>
+      <p class="small" style="margin-top:6pt; color:#15803d"><b>→ 우리의 해법:</b> Skill을 1급 도메인으로 승격. Bot ↔ Skill N:N 관계. 워크스페이스 단위 자산 카탈로그.</p>
+    </div>
+
+    <div class="card accent nobreak">
+      <h4>③ 변수 스키마 자유형</h4>
+      <p class="small"><b>문제:</b> extraction이 dict[str, Any]에 던지는 식. 타입 검증·자동완성 없음. "date"인지 "appointment_date"인지 노드별로 표기 다르면 무용지물. 디버깅 시 어디서 채워졌는지 추적 어려움.</p>
+      <p class="small" style="margin-top:6pt; color:#15803d"><b>→ 우리의 해법:</b> Skill에 variable_schema 선언 (Phase 2). dynamic·system·extracted 출처별 namespace 분리.</p>
+    </div>
+
+    <div class="card accent nobreak">
+      <h4>④ 두 모드의 인지 부담</h4>
+      <p class="small"><b>문제:</b> 사용자가 "이 봇은 프롬프트 모드인가 플로우 모드인가" 의식해야 함. 한 봇 안에서 두 모드 혼용 불가 — 무조건 transfer-agent로 별도 봇 만들어야. 작은 분기에도 신규 agent 생성 부담.</p>
+      <p class="small" style="margin-top:6pt; color:#15803d"><b>→ 우리의 해법:</b> 단일 graph executor. 프롬프트 = 1-노드 그래프. 두 모드는 UI 토글만, 데이터는 동일 스키마.</p>
+    </div>
+
+    <div class="card accent nobreak" style="grid-column:span 2">
+      <h4>⑤ 운영 설정이 여기저기 흩어짐</h4>
+      <p class="small"><b>문제:</b> 음성 관련만 봐도 <span class="kbd">build/voice/voice-select</span>, <span class="kbd">build/voice/pronunciation-guide</span>, <span class="kbd">build/conversation/speech-settings</span>, <span class="kbd">build/conversation/first-message</span>, <span class="kbd">build/conversation/dtmf</span> 5군데 분산. 빌더가 어디서 무엇을 설정하는지 헷갈림. 운영자가 동일 봇의 발음 사전을 찾을 때 3분 걸림.</p>
+      <p class="small" style="margin-top:6pt; color:#15803d"><b>→ 우리의 해법:</b> Bot 평면 설정으로 통합 — 한 화면에 voice·greeting·발음사전·DTMF·인터럽트 정책 모두 노출. 자산(Persona/Skill/Knowledge/Tool)과 명확히 분리.</p>
+    </div>
+  </div>
+
+  <h3>핵심 통찰</h3>
+  <div class="quote">
+    <b>vox의 한계는 "잘 만든 도구"의 한계가 아니라 "범용 매니지드 SaaS"의 한계다.</b> 그들은 1만 고객을 위해 표현력·안전성·유지보수 사이 균형을 잡는다. 우리는 <b>자체 도메인</b>(우리 고객사 콜봇)에 맞춰 그 균형점을 다시 잡을 수 있다.
+  </div>
+</section>
+
+<!-- ============ PART 3 COVER ============ -->
+<section class="page cover" style="background:#dcfce7">
+  <div class="badge flow" style="margin-bottom:18pt">Part 3 · 개선</div>
+  <h1 style="color:#14532d">우리가 고안한<br/>개선된 구조</h1>
+  <p class="keymsg" style="max-width:140mm; color:#15803d">Part 2의 5가지 한계를 모두 해소하는 aicx-callbot 설계. 단일 graph executor · 공유 VariableContext · global dispatcher · Skill 라이브러리 · 통합 SkillEditor.</p>
+  <p class="muted" style="margin-top:30pt"><b>다룰 내용:</b> 하이브리드 구조 장단점 · 분석 결론 · 데이터 모델 · 백엔드/프론트 구조 · 로드맵 · 구조 개선안</p>
+</section>
+
+<!-- ============ 8. 우리 하이브리드 구조 장단점 ============ -->
+<section class="page">
+  <h2>8. 우리 하이브리드 구조 — 한 눈에 보는 장단점</h2>
+  <p class="muted"><b>Prompt(메인) + Flow(분기) = 통합 에이전트.</b> §6-3 패턴이 가져오는 7장점과 7단점, 그리고 단점 보완 매핑.</p>
+
+  <div class="grid-2 nobreak" style="margin-top:14pt">
+    <div class="card flow nobreak">
+      <h4>✅ 장점 7가지</h4>
+      <p class="small"><b>① 인지 부담 0</b> — 사용자는 "그냥 봇". 빌더도 모드 의식 안 함</p>
+      <p class="small"><b>② 비용·지연 최적화</b> — 일반 응대 LLM 1콜, 분기 진입 시만 다중 노드</p>
+      <p class="small"><b>③ 점진적 강화</b> — 프롬프트로 시작 → 빠지는 케이스 발견 → 그 분기만 플로우</p>
+      <p class="small"><b>④ 재사용</b> — 결제 플로우를 N개 봇이 공유 (drift 방지)</p>
+      <p class="small"><b>⑤ 권한 분리</b> — 메인=CS팀, 결제=결제팀, Skill 단위 격리</p>
+      <p class="small"><b>⑥ 디버깅 격리</b> — "라우팅 실패" vs "분기 내부 버그" 책임 경계 명확</p>
+      <p class="small"><b>⑦ 다국어·페르소나</b> — 외국어 분기에 다른 페르소나 갈아끼움</p>
+    </div>
+    <div class="card accent nobreak">
+      <h4>⚠️ 단점 7가지</h4>
+      <p class="small"><b>① 라우터 단일 실패점</b> — 메인 LLM 의도 오인 → 잘못된 분기</p>
+      <p class="small"><b>② 비결정성</b> — 같은 발화에 라우팅 결과 달라질 수 있음</p>
+      <p class="small"><b>③ 변수 인계 복잡</b> — 메인→분기→복귀 시 컨텍스트 누락 위험</p>
+      <p class="small"><b>④ 컨텍스트 분단</b> — 분기 안에서 "아 그게 아니고…" 발화 처리</p>
+      <p class="small"><b>⑤ 글로벌 충돌</b> — 메인·분기의 globals 우선순위 모호</p>
+      <p class="small"><b>⑥ 분석 통합</b> — 통화 1건이 여러 Skill 거침 → 집계 단위 모호</p>
+      <p class="small"><b>⑦ 버전 매트릭스</b> — 메인 v3 + 결제 v2 + 환불 v1 운영 조합 추적</p>
+    </div>
+  </div>
+
+  <h3>언제 빛나는가 vs 부적합한 케이스</h3>
+  <div class="grid-2 nobreak">
+    <div class="card prompt nobreak">
+      <h4>✅ 빛나는 케이스 (우리 B2B 콜봇)</h4>
+      <p class="small">• 의도 5~15개 (적당히 분기됨)</p>
+      <p class="small">• 일부 분기만 strict SLA (결제·본인확인)</p>
+      <p class="small">• 운영하며 점진적 강화 가능한 환경</p>
+      <p class="small">• 고객사별 페르소나·다국어 갈아끼우기</p>
+    </div>
+    <div class="card nobreak" style="background:#fff5f5; border-color:#fca5a5">
+      <h4>❌ 부적합 케이스</h4>
+      <p class="small">• 모든 분기가 strict SLA → Bot.agent_type=flow 단일 그래프</p>
+      <p class="small">• 의도 2~3개뿐 → 프롬프트 1개로 충분</p>
+      <p class="small">• 일회성 단순 봇 → 오버엔지니어링</p>
+    </div>
+  </div>
+
+  <h3>단점 보완 매핑 — 7개 중 5개는 이미 다룸</h3>
+  <table>
+    <tr><th>단점</th><th>보완 방법</th><th>다루는 곳</th></tr>
+    <tr><td>① 라우터 실패</td><td>global 룰로 라우팅을 prompt 본문에서 분리</td><td>§6-3 추천 ①+③</td></tr>
+    <tr><td>② 비결정성</td><td>작은 분류 LLM(haiku) + temperature=0</td><td>§12 ④</td></tr>
+    <tr><td>③ 변수 인계</td><td>VariableContext 단일 객체 (Frontdoor 인계)</td><td>§10 데이터 모델</td></tr>
+    <tr><td>⑥ 분석 통합</td><td>turn-level tracing (OpenTelemetry)</td><td>§13 ⑪</td></tr>
+    <tr><td>⑦ 버전 매트릭스</td><td>Bot 단위 deployment snapshot</td><td>§13 ⑥</td></tr>
+    <tr style="background:#fef3c7"><td>④ 컨텍스트 분단</td><td>분기 이탈 정책 (escape global)</td><td><b>신규 (추가 필요)</b></td></tr>
+    <tr style="background:#fef3c7"><td>⑤ 글로벌 충돌</td><td>우선순위 규칙 (bot &gt; skill &gt; global)</td><td><b>신규 (추가 필요)</b></td></tr>
+  </table>
+
+  <div class="quote nobreak">
+    💡 <b>한 줄 정리:</b> 7개 단점 중 5개는 이미 §6~§13에서 다뤘고, 2개(분기 이탈·글로벌 충돌)만 추가 정책 정의 필요. <b>우리 B2B 콜봇 도메인에 정확히 맞는 구조.</b>
+  </div>
+</section>
+
+<!-- ============ vox 분석 결론 + 매핑 ============ -->
+<section class="page">
+  <h2>9. vox 분석 결론 · aicx-callbot 매핑</h2>
+  <p class="muted">vox docs를 역설계해서 얻은 <b>"vox는 왜 이렇게 만들었나"</b> 5가지 통찰. 우리 적용 원칙은 §11-3에서 별도 정리.</p>
+
+  <h3>vox 설계가 말해주는 5가지 통찰</h3>
+  <div class="grid-2">
+    <div class="card nobreak">
+      <h4>① 프롬프트 = 1-노드 플로우</h4>
+      <p class="small">두 모드는 본질적으로 같은 그래프. vox는 UX·과금 분리 위해 둘로 보여주지만 엔진은 통합 가능하다는 뜻.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>② 변수가 첫째, 프롬프트가 둘째</h4>
+      <p class="small">extraction·condition·api·sms 모든 노드가 변수를 통해 대화. 변수 모델이 빈약하면 vox-급 표현력 불가.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>③ global은 상태기계 밖의 룰</h4>
+      <p class="small">"어디서든 상담사" 같은 인터럽트는 노드/엣지로 표현 불가. vox가 별도 개념(global node)을 둔 이유.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>④ transfer-agent는 노드+tool 양방향</h4>
+      <p class="small">두 모드가 한 통화 안에서 매끄럽게 섞이는 비밀. 노드/tool 어느 쪽에서든 호출 가능해야 멀티 에이전트가 자연스러움.</p>
+    </div>
+    <div class="card nobreak" style="grid-column:span 2">
+      <h4>⑤ 자산(재사용)과 운영 설정(평면)을 칼같이 분리</h4>
+      <p class="small">Persona·Knowledge·Tool은 라이브러리화. Voice·greeting·인터럽트 정책 등은 Bot에 박힌 평면 설정. 이 구분이 흐려지면 라이브러리 폭발 또는 봇별 중복 폭발.</p>
+    </div>
+  </div>
+
+  <h3>aicx-callbot 매핑</h3>
+  <table>
+    <tr><th>vox 개념</th><th>우리 도메인</th><th>비고</th></tr>
+    <tr><td>프롬프트 에이전트</td><td>Persona + Skill(prompt)</td><td>MVP 우선</td></tr>
+    <tr><td>플로우 에이전트</td><td>Skill(graph)</td><td>v2, 단 데이터 모델은 처음부터 graph-ready</td></tr>
+    <tr><td>conversation 노드</td><td>Skill 단위 (markdown content)</td><td>1:1 매핑</td></tr>
+    <tr><td>extraction 노드</td><td>Variable 도메인 + LLM JSON</td><td>슬롯 필링 런타임</td></tr>
+    <tr><td>condition 노드</td><td>CEL/JSONLogic 평가기</td><td>외부 라이브러리</td></tr>
+    <tr><td>api / tool 노드</td><td>Tool 엔티티 + invocation 런타임</td><td>chatbot-v2 재사용</td></tr>
+    <tr><td>transfer-agent</td><td>Skill 간 라우팅 (Frontdoor)</td><td>이미 설계됨</td></tr>
+    <tr><td>global 노드</td><td>인터럽트 핸들러 dispatcher</td><td>별도 모듈 필요</td></tr>
+    <tr><td>3종 변수</td><td>VariableContext 단일 객체</td><td>첫 버전부터 통합</td></tr>
+    <tr><td>지식 (text/web/file)</td><td>Knowledge + chunker + embedding</td><td>3종 모두 지원 권장</td></tr>
+    <tr><td>voice / pronunciation / first-message</td><td>Bot 평면 필드 (<span class="kbd">voice</span>, <span class="kbd">greeting</span>, …)</td><td>자산 아님. Phase 2~3에서 라이브러리 요구 시 분리</td></tr>
+  </table>
+</section>
+
+<!-- ============ graph-ready 데이터 모델 ============ -->
+<section class="page">
+  <h2>10. graph-ready Skill 데이터 모델</h2>
+  <p class="muted"><b>핵심 아이디어:</b> 모든 Skill은 그래프다. 프롬프트 모드는 노드 1개짜리 그래프일 뿐.</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <rect x="40" y="20" width="620" height="280" rx="14" fill="#fff" stroke="#0f172a" stroke-width="1.5"/>
+      <text x="350" y="46" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">Skill</text>
+      <text x="350" y="64" text-anchor="middle" font-size="10" fill="#475569" font-family="SF Mono, monospace">id, name, version, mode("prompt" | "flow")</text>
+
+      <line x1="60" y1="78" x2="640" y2="78" stroke="#cbd5e1"/>
+
+      <rect x="60" y="92" width="380" height="190" rx="10" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="250" y="114" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">graph</text>
+
+      <rect x="80" y="124" width="160" height="42" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="160" y="142" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">entrypoint</text>
+      <text x="160" y="158" text-anchor="middle" font-size="9" fill="#475569">NodeId</text>
+
+      <rect x="260" y="124" width="160" height="42" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="340" y="142" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">nodes</text>
+      <text x="340" y="158" text-anchor="middle" font-size="9" fill="#475569">[Node, ...]</text>
+
+      <rect x="80" y="174" width="160" height="42" rx="6" fill="#fff" stroke="#16a34a"/>
+      <text x="160" y="192" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">edges</text>
+      <text x="160" y="208" text-anchor="middle" font-size="9" fill="#475569">[Edge, ...]</text>
+
+      <rect x="260" y="174" width="160" height="42" rx="6" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="340" y="192" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">globals</text>
+      <text x="340" y="208" text-anchor="middle" font-size="9" fill="#9a3412">[GlobalRule, ...]</text>
+
+      <text x="250" y="252" text-anchor="middle" font-size="9.5" fill="#15803d" font-style="italic">Node { id, type, config }</text>
+      <text x="250" y="268" text-anchor="middle" font-size="9.5" fill="#15803d" font-style="italic">Edge { from, to, when? }</text>
+
+      <rect x="460" y="92" width="180" height="190" rx="10" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="550" y="114" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a8a">refs</text>
+      <rect x="480" y="128" width="140" height="36" rx="6" fill="#fff" stroke="#2563eb"/>
+      <text x="550" y="150" text-anchor="middle" font-size="10" fill="#1e3a8a">persona_id</text>
+      <rect x="480" y="170" width="140" height="36" rx="6" fill="#fff" stroke="#2563eb"/>
+      <text x="550" y="192" text-anchor="middle" font-size="10" fill="#1e3a8a">knowledge_ids[]</text>
+      <rect x="480" y="212" width="140" height="36" rx="6" fill="#fff" stroke="#2563eb"/>
+      <text x="550" y="234" text-anchor="middle" font-size="10" fill="#1e3a8a">tool_ids[]</text>
+    </svg>
+  </div>
+
+  <h3>같은 스키마에 두 모드가 담긴다</h3>
+  <div class="grid-2">
+    <div class="card prompt">
+      <h4><span class="badge prompt">프롬프트 모드</span> = 1-노드 그래프</h4>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 320 80" width="100%">
+          <ellipse cx="30" cy="40" rx="20" ry="14" fill="#dbeafe" stroke="#2563eb"/>
+          <text x="30" y="44" text-anchor="middle" font-size="9" font-weight="700" fill="#1e3a8a">begin</text>
+          <line x1="50" y1="40" x2="80" y2="40" stroke="#475569" marker-end="url(#arr3)"/>
+          <rect x="80" y="22" width="160" height="36" rx="6" fill="#fff" stroke="#2563eb"/>
+          <text x="160" y="38" text-anchor="middle" font-size="9.5" font-weight="700" fill="#1e3a8a">conversation</text>
+          <text x="160" y="52" text-anchor="middle" font-size="8.5" fill="#475569">prompt + tools + knowledge</text>
+          <line x1="240" y1="40" x2="270" y2="40" stroke="#475569" marker-end="url(#arr3)"/>
+          <ellipse cx="290" cy="40" rx="20" ry="14" fill="#f1f5f9" stroke="#64748b"/>
+          <text x="290" y="44" text-anchor="middle" font-size="9" font-weight="700" fill="#0f172a">end</text>
+          <defs><marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+        </svg>
+      </div>
+    </div>
+    <div class="card flow">
+      <h4><span class="badge flow">플로우 모드</span> = N-노드 그래프</h4>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 320 80" width="100%">
+          <ellipse cx="20" cy="40" rx="14" ry="12" fill="#dcfce7" stroke="#16a34a"/>
+          <rect x="44" y="28" width="34" height="24" rx="4" fill="#fff" stroke="#16a34a"/>
+          <text x="61" y="44" text-anchor="middle" font-size="7.5" fill="#15803d">conv</text>
+          <rect x="84" y="28" width="44" height="24" rx="4" fill="#fff" stroke="#16a34a"/>
+          <text x="106" y="44" text-anchor="middle" font-size="7.5" fill="#15803d">extract</text>
+          <rect x="134" y="28" width="34" height="24" rx="4" fill="#fff" stroke="#16a34a"/>
+          <text x="151" y="44" text-anchor="middle" font-size="7.5" fill="#15803d">cond</text>
+          <rect x="174" y="28" width="34" height="24" rx="4" fill="#fff" stroke="#16a34a"/>
+          <text x="191" y="44" text-anchor="middle" font-size="7.5" fill="#15803d">api</text>
+          <rect x="214" y="28" width="34" height="24" rx="4" fill="#fff" stroke="#16a34a"/>
+          <text x="231" y="44" text-anchor="middle" font-size="7.5" fill="#15803d">sms</text>
+          <ellipse cx="270" cy="40" rx="14" ry="12" fill="#f1f5f9" stroke="#64748b"/>
+          <line x1="34" y1="40" x2="42" y2="40" stroke="#475569"/>
+          <line x1="78" y1="40" x2="82" y2="40" stroke="#475569"/>
+          <line x1="128" y1="40" x2="132" y2="40" stroke="#475569"/>
+          <line x1="168" y1="40" x2="172" y2="40" stroke="#475569"/>
+          <line x1="208" y1="40" x2="212" y2="40" stroke="#475569"/>
+          <line x1="248" y1="40" x2="256" y2="40" stroke="#475569"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <h3>이 설계가 주는 이득</h3>
+  <ul>
+    <li><b>마이그레이션 0</b> — 프롬프트 → 플로우 = 노드 추가만</li>
+    <li><b>런타임 코드 1개</b> — graph executor 하나, 1-노드는 fast path</li>
+    <li><b>버전 관리 단순</b> — Skill 단위 스냅샷, diff 깔끔</li>
+    <li><b>Frontdoor 핸드오프 통일</b> — transfer-agent는 결국 "Skill ID로 점프 + 변수 인계"</li>
+  </ul>
+</section>
+
+<!-- ============ 10-1. 백엔드 — 현황 + 목표 구조 ============ -->
+<section class="page">
+  <h2>11-1. aicx-callbot 백엔드 — 현황 진단 + 목표 구조</h2>
+
+  <div class="card accent nobreak" style="margin-bottom:10pt">
+    <h4>현재 상태 — 도메인이 거의 비어있음 (골든 타이밍)</h4>
+    <p class="small"><b>domain/entities.py</b>: BotRuntime 1개뿐 → Skill·Graph·Node·VariableContext 모두 부재</p>
+    <p class="small"><b>application/</b>: skill_runtime · voice_session 이름은 잡힘 → Dispatcher·Frontdoor 분리 안 됨</p>
+    <p class="small"><b>frontend</b>: FlowEditor ↔ MarkdownEditor 별도 → 통합 SkillEditor 필요</p>
+  </div>
+
+  <h3>도메인 (graph-ready)</h3>
+  <div class="svg-wrap nobreak">
+    <svg viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:700px">
+      <rect x="20" y="20" width="680" height="246" rx="12" fill="#fff" stroke="#475569"/>
+      <text x="40" y="44" font-size="12" font-weight="700" fill="#0f172a">backend/src/domain/</text>
+
+      <rect x="40" y="60" width="200" height="100" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="140" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">skill/</text>
+      <text x="50" y="98" font-size="9" fill="#15803d">• skill.py — aggregate root</text>
+      <text x="50" y="114" font-size="9" fill="#15803d">• graph.py — Graph VO</text>
+      <text x="50" y="130" font-size="9" fill="#15803d">• node.py — 11 type union</text>
+      <text x="50" y="146" font-size="9" fill="#15803d">• edge.py · global_rule.py</text>
+
+      <rect x="260" y="60" width="200" height="100" rx="8" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="360" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">variable/</text>
+      <text x="270" y="98" font-size="9" fill="#9a3412">• context.py</text>
+      <text x="270" y="114" font-size="9" fill="#9a3412">  ↳ dynamic + system + extracted</text>
+      <text x="270" y="130" font-size="9" fill="#9a3412">  ↳ resolve("{{name}}님") 메서드</text>
+      <text x="270" y="148" font-size="9" font-style="italic" fill="#9a3412">세션당 1개</text>
+
+      <rect x="480" y="60" width="200" height="100" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="580" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">refs</text>
+      <text x="490" y="98" font-size="9" fill="#1e40af">• persona/</text>
+      <text x="490" y="114" font-size="9" fill="#1e40af">• knowledge/ (text·web·file)</text>
+      <text x="490" y="130" font-size="9" fill="#1e40af">• tool/ (REST + builtin)</text>
+      <text x="490" y="146" font-size="9" fill="#1e40af">• session/ (CallSession, TurnLog)</text>
+
+      <line x1="40" y1="178" x2="680" y2="178" stroke="#cbd5e1" stroke-dasharray="3,3"/>
+      <text x="40" y="196" font-size="11" font-weight="700" fill="#0f172a">핵심 시그니처</text>
+      <text x="40" y="216" font-size="9.5" font-family="SF Mono, monospace" fill="#334155">Skill { id, name, version, mode("prompt"|"flow"), graph, persona_id, knowledge_ids[], tool_ids[] }</text>
+      <text x="40" y="232" font-size="9.5" font-family="SF Mono, monospace" fill="#334155">Graph { entrypoint, nodes[], edges[], globals[] }</text>
+      <text x="40" y="248" font-size="9.5" font-family="SF Mono, monospace" fill="#334155">VariableContext { dynamic, system, extracted, resolve(template) }</text>
+    </svg>
+  </div>
+
+  <h3>애플리케이션 — 한 턴 호출 순서</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:700px">
+      <defs><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+
+      <rect x="280" y="20" width="160" height="36" rx="8" fill="#f1f5f9" stroke="#475569"/>
+      <text x="360" y="42" text-anchor="middle" font-size="10" font-weight="700" fill="#0f172a">VoiceSession.handle_utterance</text>
+      <line x1="360" y1="56" x2="360" y2="74" stroke="#475569" stroke-width="1.5" marker-end="url(#arrA)"/>
+
+      <rect x="300" y="74" width="120" height="32" rx="6" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="360" y="94" text-anchor="middle" font-size="10" fill="#1e3a8a">STT → text</text>
+      <line x1="360" y1="106" x2="360" y2="124" stroke="#475569" stroke-width="1.5" marker-end="url(#arrA)"/>
+
+      <rect x="240" y="124" width="240" height="38" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="360" y="148" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">Dispatcher · 매 턴 첫 단계</text>
+
+      <line x1="280" y1="162" x2="180" y2="186" stroke="#475569" stroke-width="1.5" marker-end="url(#arrA)"/>
+      <line x1="440" y1="162" x2="540" y2="186" stroke="#475569" stroke-width="1.5" marker-end="url(#arrA)"/>
+
+      <rect x="80" y="186" width="200" height="50" rx="8" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="180" y="206" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">global 룰 매칭?</text>
+      <text x="180" y="222" text-anchor="middle" font-size="9" fill="#9a3412">YES → Frontdoor.transfer</text>
+
+      <rect x="440" y="186" width="200" height="50" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="540" y="206" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">GraphExecutor.step</text>
+      <text x="540" y="222" text-anchor="middle" font-size="9" fill="#15803d">노드 타입별 핸들러</text>
+
+      <line x1="540" y1="236" x2="540" y2="252" stroke="#475569" stroke-width="1.5" marker-end="url(#arrA)"/>
+      <text x="540" y="266" text-anchor="middle" font-size="9" fill="#334155">conv → LLM · extract → JSON · cond → CEL · api → HTTP · transfer-agent → Frontdoor</text>
+    </svg>
+  </div>
+  <p class="caption">매 턴 첫 단계는 항상 Dispatcher. global 룰이 executor 진입보다 먼저.</p>
+</section>
+
+<!-- ============ 10-3. 프론트엔드 통합 SkillEditor ============ -->
+<section class="page">
+  <h2>11-2. aicx-callbot 적용 — 프론트엔드 통합 SkillEditor</h2>
+  <p class="muted">현재 <span class="kbd">FlowEditor.tsx</span> ↔ <span class="kbd">MarkdownEditor.tsx</span> 분리 구조 → 같은 Skill 객체를 두 뷰로 보는 <b>통합 SkillEditor</b>로 전환.</p>
+
+  <div class="svg-wrap nobreak">
+    <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:700px">
+      <defs><marker id="arrF" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+
+      <rect x="260" y="20" width="200" height="60" rx="10" fill="#fff" stroke="#0f172a" stroke-width="2"/>
+      <text x="360" y="44" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">Skill 객체 (단일)</text>
+      <text x="360" y="62" text-anchor="middle" font-size="9.5" fill="#475569">{ mode, graph, refs, ... }</text>
+
+      <line x1="320" y1="80" x2="200" y2="124" stroke="#475569" stroke-width="1.5" marker-end="url(#arrF)"/>
+      <line x1="400" y1="80" x2="520" y2="124" stroke="#475569" stroke-width="1.5" marker-end="url(#arrF)"/>
+
+      <rect x="60" y="124" width="280" height="80" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="200" y="146" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a8a">PromptView</text>
+      <text x="200" y="164" text-anchor="middle" font-size="9.5" fill="#1e40af">mode === "prompt" 또는 nodes.length===1</text>
+      <text x="200" y="180" text-anchor="middle" font-size="9.5" fill="#1e40af">마크다운 에디터 (Monaco)</text>
+      <text x="200" y="196" text-anchor="middle" font-size="9" fill="#475569">1-노드 graph의 conv.prompt를 편집</text>
+
+      <rect x="380" y="124" width="280" height="80" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="520" y="146" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">FlowView</text>
+      <text x="520" y="164" text-anchor="middle" font-size="9.5" fill="#15803d">mode === "flow" 또는 nodes.length>1</text>
+      <text x="520" y="180" text-anchor="middle" font-size="9.5" fill="#15803d">캔버스 (react-flow 등)</text>
+      <text x="520" y="196" text-anchor="middle" font-size="9" fill="#475569">노드 추가/연결 + 우측 NodeConfig 패널</text>
+
+      <rect x="60" y="224" width="600" height="60" rx="10" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="360" y="246" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">ModeToggle — "Flow 모드로 전환" 버튼</text>
+      <text x="360" y="264" text-anchor="middle" font-size="9.5" fill="#9a3412">1-노드 그래프를 그대로 캔버스에 배치. 데이터 변환 없음. 되돌릴 수 있음 (단, 노드가 1개일 때만)</text>
+
+      <rect x="60" y="298" width="600" height="34" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-dasharray="3,3"/>
+      <text x="360" y="320" text-anchor="middle" font-size="10" font-weight="600" fill="#0f172a">공유 NodeConfig 패널 — Conversation · Extraction · Condition · Api · TransferAgent · …</text>
+    </svg>
+  </div>
+
+  <h3>전체 폴더 제안</h3>
+  <div class="grid-2">
+    <div class="card nobreak">
+      <h4>frontend/src/components/</h4>
+      <p class="small" style="font-family:'SF Mono',monospace; white-space:pre-line; line-height:1.4">SkillEditor/
+  index.tsx
+  PromptView.tsx
+  FlowView.tsx
+  ModeToggle.tsx
+  NodeConfig/
+    ConversationConfig.tsx
+    ExtractionConfig.tsx
+    ConditionConfig.tsx
+    ApiConfig.tsx
+    TransferAgentConfig.tsx
+Sidebar/
+  WorkspaceSelector.tsx
+  AnalysisTree.tsx
+  BuildTree.tsx
+Header/
+  BotTitle.tsx
+  VersionDropdown.tsx
+  DeployButton.tsx
+TestPanel/
+  LiveChat.tsx
+  TurnMeta.tsx
+  GlobalTrigger.tsx</p>
+    </div>
+    <div class="card nobreak">
+      <h4>backend/src/</h4>
+      <p class="small" style="font-family:'SF Mono',monospace; white-space:pre-line; line-height:1.4">domain/
+  skill/      (skill, graph, node, edge, global_rule)
+  variable/   (context)
+  persona/
+  knowledge/
+  tool/
+  session/
+
+application/
+  graph_executor.py
+  dispatcher.py
+  frontdoor.py
+  extractor.py
+  evaluator.py
+  voice_session.py
+  post_call.py
+
+infrastructure/
+  llm/ stt/ tts/ vector_db/ websocket/
+
+api/
+  rest/  ws/  webhook/</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 10-4. 단계별 로드맵 ============ -->
+<section class="page">
+  <h2>11-3. aicx-callbot 적용 — 6원칙 + 로드맵</h2>
+  <p class="muted">Phase 1만 만들어도 <b>데이터 모델은 Phase 3까지 담아야</b>. graph-ready의 의미.</p>
+
+  <table>
+    <tr><th>Phase</th><th>범위</th><th>백엔드</th><th>프론트엔드</th></tr>
+    <tr>
+      <td><span class="badge prompt">1 MVP</span></td>
+      <td>프롬프트 모드 1-Skill, WebSocket 텍스트+음성</td>
+      <td>Skill(1-node graph) · Persona · 기본 Tool · GraphExecutor(conv 노드만) · VariableContext</td>
+      <td>SkillEditor(PromptView) · LiveChat · Sidebar 기본</td>
+    </tr>
+    <tr>
+      <td><span class="badge accent">2 Multi-Skill</span></td>
+      <td>Skill 간 핸드오프 + 어드민 어포던스</td>
+      <td>Frontdoor · transfer-agent 핸들러 · 버전관리 · 워크스페이스</td>
+      <td>워크스페이스 셀렉터 · BotTree · VersionDropdown · DeployButton</td>
+    </tr>
+    <tr>
+      <td><span class="badge flow">3 Flow</span></td>
+      <td>플로우 노드 풀세트 + global</td>
+      <td>Extractor · Evaluator · Dispatcher · 전 노드 타입 핸들러 · GlobalRule</td>
+      <td>FlowView 캔버스 · NodeConfig 패널 · GlobalTrigger 시각화</td>
+    </tr>
+    <tr>
+      <td><span class="badge gray">4 Telephony</span></td>
+      <td>SIP 인입 · 아웃바운드 캠페인</td>
+      <td>SIP gateway · 캠페인 잡 워커</td>
+      <td>전화번호 관리 · 캠페인 UI</td>
+    </tr>
+  </table>
+
+  <h3>깔끔한 구조의 6가지 원칙</h3>
+  <div class="grid-2">
+    <div class="card nobreak">
+      <h4>① 런타임은 하나, UI는 둘</h4>
+      <p class="small">graph executor 한 곳에 노드 타입별 핸들러 집중.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>② Skill = Graph + refs</h4>
+      <p class="small">모든 Skill이 Graph 필드 보유. 프롬프트 모드는 1-노드 그래프.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>③ VariableContext는 세션당 1개</h4>
+      <p class="small">3종 출처 합치고, 모든 노드·프롬프트·식에서 동일 참조.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>④ Dispatcher가 매 턴 첫 단계</h4>
+      <p class="small">global 룰 평가가 executor 진입보다 먼저.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>⑤ Frontdoor가 핸드오프 단일 진입점</h4>
+      <p class="small">transfer-agent는 노드든 tool이든 결국 같은 호출.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>⑥ 같은 Skill을 두 시각으로</h4>
+      <p class="small">모드 토글이 데이터 변환 없이 뷰만 전환.</p>
+    </div>
+  </div>
+
+  <div class="quote nobreak" style="margin-top:14pt">
+    <b>발표 메시지:</b> 우리 aicx-callbot은 vox와 같은 표현력을 단일 graph executor로 달성한다. 두 모드를 별도 코드로 분리하지 않는 게 핵심 — UI만 두 뷰, 런타임은 하나.
+  </div>
+</section>
+
+<!-- ============ 11. 구조 개선안 비교 (논의용) ============ -->
+<section class="page">
+  <h2>12. 구조 개선안 비교 — 논의 포인트</h2>
+  <p class="muted">설계 방향이 갈릴 수 있는 5가지 결정 지점. 각 옵션의 trade-off와 추천을 정리했다. <b>발표 후 논의에서 합의할 항목.</b></p>
+
+  <h3>① 핸드오프 모델 — Skill 단위 vs Sub-graph 중첩</h3>
+  <div class="grid-2">
+    <div class="card prompt nobreak">
+      <h4>옵션 A · Skill 단위 핸드오프 <span class="badge prompt">추천</span></h4>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 280 100" width="100%">
+          <rect x="10" y="35" width="70" height="30" rx="6" fill="#dbeafe" stroke="#2563eb"/>
+          <text x="45" y="55" text-anchor="middle" font-size="10" font-weight="700" fill="#1e3a8a">Skill A</text>
+          <line x1="80" y1="50" x2="105" y2="50" stroke="#475569" marker-end="url(#arrCmp)"/>
+          <text x="92" y="42" text-anchor="middle" font-size="8" fill="#475569">transfer</text>
+          <rect x="105" y="35" width="70" height="30" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+          <text x="140" y="55" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">Skill B</text>
+          <line x1="175" y1="50" x2="200" y2="50" stroke="#475569" marker-end="url(#arrCmp)"/>
+          <rect x="200" y="35" width="70" height="30" rx="6" fill="#dbeafe" stroke="#2563eb"/>
+          <text x="235" y="55" text-anchor="middle" font-size="10" font-weight="700" fill="#1e3a8a">Skill C</text>
+          <defs><marker id="arrCmp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+        </svg>
+      </div>
+      <p class="small"><b>+</b> 모델 단순. 권한·버전 Skill 단위. vox와 1:1 호환.</p>
+      <p class="small"><b>+</b> Frontdoor 1개로 통일.</p>
+      <p class="small"><b>−</b> 핸드오프 지점 약간 latency.</p>
+    </div>
+    <div class="card flow nobreak">
+      <h4>옵션 B · Sub-graph 중첩</h4>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 280 100" width="100%">
+          <rect x="10" y="20" width="260" height="60" rx="6" fill="#fff" stroke="#16a34a" stroke-width="2"/>
+          <text x="20" y="36" font-size="9" font-weight="700" fill="#14532d">Skill (혼합)</text>
+          <rect x="20" y="42" width="60" height="28" rx="4" fill="#dbeafe" stroke="#2563eb"/>
+          <text x="50" y="60" text-anchor="middle" font-size="9" fill="#1e3a8a">root</text>
+          <rect x="100" y="42" width="160" height="28" rx="4" fill="#dcfce7" stroke="#16a34a" stroke-dasharray="3,2"/>
+          <text x="180" y="60" text-anchor="middle" font-size="9" fill="#15803d">sub-graph (예약 플로우)</text>
+        </svg>
+      </div>
+      <p class="small"><b>+</b> Latency 0. 매끄러운 전환.</p>
+      <p class="small"><b>−</b> 재귀 그래프 — 모델·UX 복잡.</p>
+      <p class="small"><b>−</b> vox 마이그레이션 변환 필요.</p>
+    </div>
+  </div>
+
+  <h3>② 조건 평가 엔진 — CEL vs JSONLogic vs LLM</h3>
+  <table>
+    <tr><th>옵션</th><th>표현력</th><th>안전성</th><th>학습</th><th>추천</th></tr>
+    <tr><td><b>CEL</b> (Common Expression Language)</td><td>높음 (Google 표준)</td><td>샌드박스 ✓</td><td>중간</td><td><span class="badge prompt">추천</span> 산업 표준 · k8s admission 등 검증됨</td></tr>
+    <tr><td><b>JSONLogic</b></td><td>중간</td><td>샌드박스 ✓</td><td>쉬움</td><td>JSON UI에 친화적이지만 표현 한계</td></tr>
+    <tr><td><b>Python eval</b></td><td>최고</td><td><b>위험</b></td><td>쉬움</td><td>금지 — 인젝션 표면</td></tr>
+    <tr><td><b>LLM 자체 판정</b></td><td>최고</td><td>비결정적</td><td>없음</td><td>condition 노드용으로 부적합 · 비용·지연</td></tr>
+  </table>
+
+  <h3>③ FlowView 캔버스 라이브러리</h3>
+  <table>
+    <tr><th>옵션</th><th>커스터마이징</th><th>리스크</th><th>추천</th></tr>
+    <tr><td><b>react-flow</b> (Xyflow)</td><td>높음 · 핸드러·미니맵 풍부</td><td>중간 · 라이선스 MIT</td><td><span class="badge prompt">추천</span> 표준 도구</td></tr>
+    <tr><td><b>자체 구현 (SVG/Canvas)</b></td><td>최고</td><td>높음 · 6주+ 비용</td><td>v3 이후 검토</td></tr>
+    <tr><td><b>Mermaid (read-only)</b></td><td>낮음 · 편집 불가</td><td>낮음</td><td>플로우 미리보기/문서용만</td></tr>
+  </table>
+
+  <h3>④ global 룰 매칭 방식</h3>
+  <div class="grid-3">
+    <div class="card nobreak">
+      <h4>A · regex/keyword</h4>
+      <p class="small"><b>+</b> 빠름 · 결정적</p>
+      <p class="small"><b>−</b> "상담사 좀 부탁드려요" 같은 변형 놓침</p>
+    </div>
+    <div class="card nobreak">
+      <h4>B · LLM 의도 분류 <span class="badge prompt">추천</span></h4>
+      <p class="small"><b>+</b> 자연어 변형 잡음</p>
+      <p class="small"><b>−</b> 매 턴 LLM 1콜 추가 비용</p>
+      <p class="small">→ 작은 분류 모델(haiku)로 비용 완화</p>
+    </div>
+    <div class="card nobreak">
+      <h4>C · 하이브리드</h4>
+      <p class="small"><b>+</b> A로 1차 필터 → 의심되면 B</p>
+      <p class="small"><b>−</b> 구현 복잡</p>
+      <p class="small">→ Phase 3에 검토</p>
+    </div>
+  </div>
+
+  <h3>⑤ Bot ↔ Skill 관계 — 1:N vs N:N</h3>
+  <div class="grid-2">
+    <div class="card nobreak">
+      <h4>옵션 A · 1:N (Bot이 Skill 소유)</h4>
+      <p class="small">Skill은 봇 안에서만 의미 있음. 다른 봇이 쓰려면 복제.</p>
+      <p class="small"><b>+</b> 단순. 권한·버전 명확.</p>
+      <p class="small"><b>−</b> "결제봇" 같은 공통 Skill을 여러 봇에서 못 씀. 복제 시 drift.</p>
+    </div>
+    <div class="card prompt nobreak">
+      <h4>옵션 B · N:N (Skill 라이브러리) <span class="badge prompt">추천</span></h4>
+      <p class="small">Skill은 워크스페이스의 자산. 여러 봇이 참조.</p>
+      <p class="small"><b>+</b> 재사용 · 라이브러리 가치.</p>
+      <p class="small"><b>−</b> "삭제하면 다른 봇 깨짐" 같은 의존성 관리 필요.</p>
+      <p class="small">→ 워크스페이스 단위 자산 카탈로그가 vox UX 핵심.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 11. 추가 개선안 — 운영·확장 ============ -->
+<section class="page">
+  <h2>13. 추가 개선안 — 운영·확장</h2>
+  <p class="muted">위 5개가 핵심 결정이라면, 아래는 "있으면 좋은" 개선안들. <b>Phase별로 도입 시점만 합의하면 됨.</b></p>
+
+  <div class="grid-2">
+    <div class="card nobreak">
+      <h4>⑥ Skill 버전관리 — 스냅샷 vs Git-like</h4>
+      <p class="small"><b>스냅샷:</b> "v1, v2, v3" 단순 라벨. 구현 쉬움. 추천 (MVP).</p>
+      <p class="small"><b>Git-like:</b> branch · merge · 3-way diff. 강력하지만 과합. v4+ 검토.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>⑦ 테스트 콘솔 — 텍스트 우선 vs 음성 우선</h4>
+      <p class="small"><b>텍스트:</b> WebSocket 채팅. 빠른 반복. <span class="badge prompt">MVP</span></p>
+      <p class="small"><b>음성:</b> 실제 STT/TTS 통과. Phase 2.</p>
+      <p class="small">→ 둘 다 같은 SkillEditor 안에서 토글로 지원.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>⑧ Variable 스키마 — 자유 vs 명시적</h4>
+      <p class="small"><b>자유:</b> dict[str, Any]. 빠른 시작.</p>
+      <p class="small"><b>명시적:</b> Skill에 variable_schema 선언. 타입 체크·자동완성. <span class="badge prompt">추천 (Phase 2)</span></p>
+    </div>
+    <div class="card nobreak">
+      <h4>⑨ Tool 호출 권한 — 공개 vs 봇별</h4>
+      <p class="small"><b>공개:</b> 모든 Skill이 모든 Tool 호출 가능. 단순.</p>
+      <p class="small"><b>봇별:</b> Bot.allowed_tool_ids로 제한. <span class="badge prompt">추천</span> 사고 방지.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>⑩ Post-call 추출 — 동기 vs 잡 큐</h4>
+      <p class="small"><b>동기:</b> 통화 종료 직후 인라인. 단순. MVP.</p>
+      <p class="small"><b>잡 큐:</b> Celery/Arq. 대량·재시도·메트릭. Phase 2~3.</p>
+    </div>
+    <div class="card nobreak">
+      <h4>⑪ 관측성 — turn-level tracing</h4>
+      <p class="small">매 턴마다 latency·cost·노드 ID·LLM 토큰을 trace로. <b>OpenTelemetry 권장.</b></p>
+      <p class="small">→ Waterfall.tsx에 그대로 띄우면 디버깅 천국.</p>
+    </div>
+  </div>
+
+  <h3>논의 우선순위 (제안)</h3>
+  <table>
+    <tr><th>우선</th><th>결정 지점</th><th>왜 지금 정해야 하나</th></tr>
+    <tr><td><b>P0</b></td><td>① 핸드오프 (A vs B)</td><td>도메인 모델 형태가 갈림</td></tr>
+    <tr><td><b>P0</b></td><td>⑤ Bot↔Skill 관계 (1:N vs N:N)</td><td>스키마·권한 설계 영향</td></tr>
+    <tr><td><b>P1</b></td><td>② 조건 평가 엔진</td><td>condition 노드 출시 전</td></tr>
+    <tr><td><b>P1</b></td><td>④ global 매칭 방식</td><td>Phase 3 시작 전</td></tr>
+    <tr><td><b>P2</b></td><td>③ 캔버스 라이브러리</td><td>FlowView 작업 시작 전</td></tr>
+    <tr><td><b>P2</b></td><td>⑥~⑪ 운영·확장 개선안</td><td>Phase별 도입 시점만</td></tr>
+  </table>
+
+  <div class="quote">
+    <b>발표 후 액션:</b> P0 두 개(① 핸드오프 / ⑤ Bot-Skill 관계)는 다음 미팅 전에 결정. P1·P2는 해당 Phase 킥오프 때 결정.
+  </div>
+</section>
+
+<!-- ============ 끝 ============ -->
+<section class="page">
+  <h2>14. 정리 · Q&amp;A</h2>
+
+  <h3>발표 한 줄 정리</h3>
+  <div class="quote">
+    <b>vox 콜봇 에이전트는 "두 모드 × 4 자산 × 11 노드"로 완전히 분해된다.</b> 두 모드는 사실 UI 구분일 뿐이고, 우리 aicx-callbot은 단일 graph executor + 공유 VariableContext + global dispatcher로 같은 표현력을 달성할 수 있다.
+  </div>
+
+  <h3>예상 질문</h3>
+  <table>
+    <tr><th>질문</th><th>답</th></tr>
+    <tr><td>왜 vox는 두 모드를 분리했나?</td><td>UX 분리 + 턴당 LLM 호출 수 차이 + 결정성 보증 필요한 도메인 + 디버깅 표면. 단 엔진은 통합 가능.</td></tr>
+    <tr><td>한 통화 안에 모드 전환이 정말 매끄러운가?</td><td><span class="kbd">transfer-agent</span>가 노드이자 builtin tool이라서 가능. 변수 컨텍스트는 그대로 인계.</td></tr>
+    <tr><td>우리 MVP는 어디서 시작?</td><td>옵션 A (Skill 단위 핸드오프). vox 멘탈 모델 보존 + Frontdoor 재사용.</td></tr>
+    <tr><td>graph-ready 데이터 모델이 정말 필요한가?</td><td>MVP가 프롬프트만 써도 필요. 나중에 추가하면 마이그레이션 비용이 큼.</td></tr>
+    <tr><td>global 핸들러는 왜 별도 dispatcher?</td><td>"어느 상태에서든" 발동되는 룰은 상태머신으로 표현 불가. 매 턴 첫 단계에서 평가 필요.</td></tr>
+  </table>
+
+  <div class="footer">
+    출처 · docs.tryvox.co/llms.txt · aicx-callbot/docs/plans/VOX_AGENT_STRUCTURE.md
+  </div>
+</section>
+
+</body>
+</html>

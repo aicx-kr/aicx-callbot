@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>aicx-callbot 구조 한 장으로</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  @page { @top-left { content: none; } @top-center { content: none; } @top-right { content: none; }
+          @bottom-left { content: none; } @bottom-center { content: none; } @bottom-right { content: none; } }
+  :root{
+    --c-prompt:#2563eb; --c-prompt-bg:#dbeafe;
+    --c-flow:#16a34a; --c-flow-bg:#dcfce7;
+    --c-accent:#f59e0b; --c-accent-bg:#fef3c7;
+    --c-gray:#64748b; --c-gray-bg:#f1f5f9;
+    --c-text:#0f172a; --c-muted:#475569;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0; padding:0; color:var(--c-text); font-family:-apple-system, BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","SF Pro KR",sans-serif; font-size:11.5pt; line-height:1.65;}
+  h1{font-size:32pt; margin:0 0 8pt 0; letter-spacing:-.02em;}
+  h2{font-size:20pt; margin:0 0 16pt 0; border-bottom:2px solid var(--c-text); padding-bottom:8pt; letter-spacing:-.01em;}
+  h3{font-size:14pt; margin:22pt 0 10pt 0;}
+  p{margin:8pt 0;}
+  .muted{color:var(--c-muted)}
+  .small{font-size:10pt}
+  .page{page-break-after:always; min-height: 252mm;}
+  .page:last-child{page-break-after:auto}
+  .cover{display:flex; flex-direction:column; justify-content:center; align-items:flex-start; min-height:252mm;}
+  .badge{display:inline-block; padding:4pt 12pt; border-radius:999px; font-size:10pt; font-weight:600;}
+  .badge.prompt{background:var(--c-prompt-bg); color:var(--c-prompt)}
+  .badge.flow{background:var(--c-flow-bg); color:var(--c-flow)}
+  .badge.accent{background:var(--c-accent-bg); color:#92400e}
+  table{width:100%; border-collapse:collapse; font-size:10.5pt; margin:10pt 0}
+  th,td{border:1px solid #cbd5e1; padding:8pt 10pt; text-align:left; vertical-align:top}
+  th{background:#f8fafc; font-weight:600}
+  .grid-2{display:grid; grid-template-columns:1fr 1fr; gap:14pt}
+  .grid-4{display:grid; grid-template-columns:1fr 1fr; gap:14pt}
+  .card{border:1.5px solid #cbd5e1; border-radius:12px; padding:14pt 16pt; background:#fff}
+  .card h4{margin:0 0 6pt 0; font-size:12pt}
+  .card.prompt{border-color:var(--c-prompt); background:linear-gradient(180deg,#fff, var(--c-prompt-bg))}
+  .card.flow{border-color:var(--c-flow); background:linear-gradient(180deg,#fff, var(--c-flow-bg))}
+  .card.accent{border-color:var(--c-accent); background:linear-gradient(180deg,#fff, var(--c-accent-bg))}
+  .kbd{font-family:"SF Mono","Menlo",monospace; background:#f1f5f9; padding:2pt 6pt; border-radius:4px; font-size:9.5pt; color:#475569}
+  .svg-wrap{text-align:center; margin:14pt 0; page-break-inside:avoid; break-inside:avoid;}
+  svg{max-width:100%; height:auto; display:inline-block; vertical-align:top;}
+  .quote{border-left:4px solid var(--c-accent); padding:10pt 16pt; background:#fffbeb; margin:12pt 0; font-size:11.5pt}
+  .num{display:inline-block; width:28pt; height:28pt; border-radius:50%; background:var(--c-text); color:#fff; text-align:center; line-height:28pt; font-weight:700; margin-right:8pt; font-size:13pt}
+  .keymsg{font-size:15pt; line-height:1.55;}
+  ul{margin:8pt 0; padding-left:20pt}
+  li{margin:5pt 0}
+  .techbox{background:#f8fafc; border:1px solid #cbd5e1; border-radius:6px; padding:6pt 10pt; font-size:9.5pt; color:var(--c-muted); margin:8pt 0}
+</style>
+</head>
+<body>
+
+<!-- ==== COVER ==== -->
+<section class="page cover">
+  <div class="badge accent" style="margin-bottom:20pt">구조 논의용</div>
+  <h1>aicx-callbot<br/>구조 한 장으로</h1>
+  <p class="keymsg" style="max-width:140mm; margin-top:14pt">콜봇이 어떻게 짜여있는지를 4가지 핵심으로 정리. <b>큰 그림에 집중하고, 클래스 이름·파일 경로 같은 디테일은 디테일 박스에만</b>.</p>
+  <div style="margin-top:50pt">
+    <div class="badge prompt">① 누구·무엇</div>
+    <div class="badge flow">② 두 가지 일하는 방식</div>
+    <div class="badge accent">③ 통화 흐름</div>
+    <div class="badge prompt">④ 코드 구조 원칙</div>
+  </div>
+  <p class="muted small" style="margin-top:auto">상세 분석은 VOX_AGENT_STRUCTURE.pdf 참조</p>
+</section>
+
+<!-- ==== OVERVIEW ==== -->
+<section class="page">
+  <h2>한 줄 요약</h2>
+
+  <div class="quote" style="margin:20pt 0 30pt 0; font-size:13.5pt">
+    한 통화에 <b>봇 여러 명</b>이 협업한다. 그중 한 명은 <b>메인</b>(통화를 시작·자유 응대), 나머지는 <b>서브</b>(환불·결제 같은 절차 전문). 메인이 의도를 듣고 적절한 서브에게 넘기고, 서브가 끝나면 다시 메인으로 돌아온다.
+  </div>
+
+  <h3>4가지 핵심</h3>
+  <div class="grid-4" style="margin-top:14pt">
+    <div class="card prompt">
+      <h4><span class="num" style="background:var(--c-prompt)">1</span>누구·무엇</h4>
+      <p class="small">한 통화 = <b>봇 묶음</b>. 메인 1명 + 서브 N명. 각 봇은 자기만의 페르소나·지식·도구를 가짐.</p>
+    </div>
+    <div class="card flow">
+      <h4><span class="num" style="background:var(--c-flow)">2</span>두 가지 방식</h4>
+      <p class="small">자유 대화를 잘하는 <b>프롬프트 봇</b>과, 절차를 빠짐없이 수행하는 <b>플로우 봇</b>. 한 봇은 둘 중 한 방식만.</p>
+    </div>
+    <div class="card accent">
+      <h4><span class="num" style="background:var(--c-accent)">3</span>통화 흐름</h4>
+      <p class="small">매 발화마다 <b>2단계</b> — ① 공통 규칙 검사 → ② 현재 활성 봇 실행. 핸드오프도 봇 실행 결과로 처리. 변수는 모두가 공유.</p>
+    </div>
+    <div class="card prompt">
+      <h4><span class="num" style="background:var(--c-prompt)">4</span>코드 원칙</h4>
+      <p class="small">비즈니스 규칙은 한 곳에만. DB·외부 API 사용 부분과 명확히 분리.</p>
+    </div>
+  </div>
+
+  <h3 style="margin-top:14pt">이후 페이지 구성</h3>
+  <p class="small">§1 누구·무엇 / §2 두 가지 일하는 방식 / §3 분기 필요·불필요 / §4 통화 흐름 / §5 코드 구조 원칙 / §6 구체 시나리오 / §7 현재 설계안 / §8 논의 필요 항목</p>
+</section>
+
+<!-- ==== 1. WHO/WHAT ==== -->
+<section class="page">
+  <h2><span class="num" style="background:var(--c-prompt)">1</span>누구·무엇</h2>
+  <p class="muted">한 통화 안에는 봇 한 명이 아니라 <b>여러 명이 협업</b>한다. 그리고 각 봇은 자기만의 자산(페르소나·스킬·지식·도구)을 가진다.</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 480" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <defs><marker id="arr1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+
+      <!-- 통화 컨테이너 -->
+      <rect x="40" y="20" width="640" height="120" rx="12" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+      <text x="360" y="46" text-anchor="middle" font-size="14" font-weight="700" fill="#92400e">📞 한 통화 — 처음부터 끝까지 일관되게 유지되는 것</text>
+      <text x="360" y="72" text-anchor="middle" font-size="10.5" fill="#9a3412">목소리 / 인사말 / 사용할 언어 / 발음 사전 / 키패드 입력 매핑</text>
+      <text x="360" y="92" text-anchor="middle" font-size="10" fill="#9a3412">→ 통화 중간에 이게 바뀌면 사용자가 "다른 사람으로 바뀌었나?" 의심</text>
+      <text x="360" y="116" text-anchor="middle" font-size="10.5" font-style="italic" fill="#92400e">→ 통화 안에 봇 여러 명을 둘 수 있음 (메인 1명 + 서브 N명)</text>
+
+      <line x1="360" y1="140" x2="360" y2="158" stroke="#475569" stroke-width="1.5" marker-end="url(#arr1)"/>
+
+      <!-- 봇들 -->
+      <rect x="130" y="158" width="140" height="50" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+      <text x="200" y="180" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a8a">메인 봇</text>
+      <text x="200" y="198" text-anchor="middle" font-size="9.5" fill="#1e40af">통화 진입점 · 자유 응대</text>
+
+      <rect x="290" y="158" width="140" height="50" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="360" y="180" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">서브 봇</text>
+      <text x="360" y="198" text-anchor="middle" font-size="9.5" fill="#15803d">환불·결제 등 절차</text>
+
+      <rect x="450" y="158" width="140" height="50" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="520" y="180" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">서브 봇</text>
+      <text x="520" y="198" text-anchor="middle" font-size="9.5" fill="#15803d">외국어 응대 등</text>
+
+      <line x1="360" y1="208" x2="360" y2="226" stroke="#475569" stroke-width="1.5" marker-end="url(#arr1)"/>
+
+      <!-- 자산 -->
+      <rect x="40" y="226" width="640" height="240" rx="12" fill="#fff" stroke="#0f172a" stroke-width="1.5"/>
+      <text x="360" y="252" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">봇 한 명이 가진 것 — 4가지 자산</text>
+
+      <rect x="60" y="268" width="140" height="180" rx="8" fill="#fff" stroke="#2563eb"/>
+      <text x="130" y="292" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a8a">페르소나</text>
+      <text x="130" y="312" text-anchor="middle" font-size="10" fill="#475569">정체성·말투</text>
+      <text x="130" y="332" text-anchor="middle" font-size="9.5" fill="#475569">"친절한 안내원"</text>
+      <text x="130" y="350" text-anchor="middle" font-size="9.5" fill="#475569">"사무적인 처리원"</text>
+      <text x="130" y="368" text-anchor="middle" font-size="9.5" fill="#475569">"엄격한 본인확인"</text>
+      <text x="130" y="396" text-anchor="middle" font-size="9" font-style="italic" fill="#64748b">→ 봇이 말하는</text>
+      <text x="130" y="412" text-anchor="middle" font-size="9" font-style="italic" fill="#64748b">방식·태도</text>
+
+      <rect x="220" y="268" width="140" height="180" rx="8" fill="#fff" stroke="#16a34a"/>
+      <text x="290" y="292" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">스킬</text>
+      <text x="290" y="312" text-anchor="middle" font-size="10" fill="#475569">의도별 능력</text>
+      <text x="290" y="332" text-anchor="middle" font-size="9.5" fill="#475569">"예약 받기"</text>
+      <text x="290" y="350" text-anchor="middle" font-size="9.5" fill="#475569">"FAQ 답변"</text>
+      <text x="290" y="368" text-anchor="middle" font-size="9.5" fill="#475569">"본인 확인"</text>
+      <text x="290" y="396" text-anchor="middle" font-size="9" font-style="italic" fill="#64748b">→ 봇이 처리할</text>
+      <text x="290" y="412" text-anchor="middle" font-size="9" font-style="italic" fill="#64748b">수 있는 업무</text>
+
+      <rect x="380" y="268" width="140" height="180" rx="8" fill="#fff" stroke="#2563eb"/>
+      <text x="450" y="292" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a8a">지식 자료</text>
+      <text x="450" y="312" text-anchor="middle" font-size="10" fill="#475569">참조할 문서</text>
+      <text x="450" y="332" text-anchor="middle" font-size="9.5" fill="#475569">진료시간.pdf</text>
+      <text x="450" y="350" text-anchor="middle" font-size="9.5" fill="#475569">가격표.xlsx</text>
+      <text x="450" y="368" text-anchor="middle" font-size="9.5" fill="#475569">위치 안내 페이지</text>
+      <text x="450" y="396" text-anchor="middle" font-size="9" font-style="italic" fill="#64748b">→ 답변에 근거가</text>
+      <text x="450" y="412" text-anchor="middle" font-size="9" font-style="italic" fill="#64748b">필요할 때 검색</text>
+
+      <rect x="540" y="268" width="140" height="180" rx="8" fill="#fff" stroke="#f59e0b"/>
+      <text x="610" y="292" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">도구</text>
+      <text x="610" y="312" text-anchor="middle" font-size="10" fill="#475569">외부 시스템 호출</text>
+      <text x="610" y="332" text-anchor="middle" font-size="9.5" fill="#475569">예약 등록 API</text>
+      <text x="610" y="350" text-anchor="middle" font-size="9.5" fill="#475569">문자 발송</text>
+      <text x="610" y="368" text-anchor="middle" font-size="9.5" fill="#475569">결제 시스템</text>
+      <text x="610" y="396" text-anchor="middle" font-size="9" font-style="italic" fill="#64748b">→ 실제 작업을</text>
+      <text x="610" y="412" text-anchor="middle" font-size="9" font-style="italic" fill="#64748b">수행할 때</text>
+    </svg>
+  </div>
+
+  <div class="quote">
+    💡 한 통화 = 봇 묶음. 봇 한 명 = 페르소나 · 스킬 · 지식 자료 · 도구 4가지로 구성. 통화 단위 설정(음성·인사말 등)은 통화 자체에 붙어있어 한 통화 동안 일관됨.
+  </div>
+</section>
+
+<!-- ==== 2. MODES ==== -->
+<section class="page">
+  <h2><span class="num" style="background:var(--c-flow)">2</span>두 가지 일하는 방식</h2>
+  <p class="muted">봇이 사용자 발화에 응답하는 방식은 두 가지. 한 봇은 둘 중 <b>하나만</b> 선택한다 (섞지 않음).</p>
+
+  <div class="grid-2 nobreak">
+    <div class="card prompt">
+      <h4>프롬프트 봇 — 자유 대화 잘함</h4>
+      <p class="small"><b>어떻게 동작하나</b>: 봇에게 "이런 일을 하는 친절한 안내원이야"라고 글로 적어두면, 사용자 발화에 LLM이 알아서 자연스럽게 답함.</p>
+      <p class="small"><b>잘 맞는 경우</b>: 인사·FAQ·일반 응대·의도 파악. 어떤 질문이 올지 미리 모를 때.</p>
+      <p class="small"><b>약점</b>: "이 3가지 정보는 무조건 받아라"같은 절차 강제가 어려움. LLM이 가끔 누락.</p>
+    </div>
+    <div class="card flow">
+      <h4>플로우 봇 — 절차를 빠짐없이</h4>
+      <p class="small"><b>어떻게 동작하나</b>: 봇의 응답을 노드로 그래프처럼 그려둠. "1단계: 이름 받기 → 2단계: 사유 받기 → 3단계: 확정". 사용자 발화가 와도 정해진 흐름대로만 진행.</p>
+      <p class="small"><b>잘 맞는 경우</b>: 결제·본인확인·환불처럼 필드 누락이 사고로 이어지는 절차.</p>
+      <p class="small"><b>약점</b>: 만드는 데 시간 들고, 사용자가 예상 밖 말을 하면 어색해질 수 있음.</p>
+    </div>
+  </div>
+
+  <h3>핵심 패턴 — 메인은 프롬프트, 분기만 플로우</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+
+      <rect x="280" y="20" width="160" height="40" rx="8" fill="#f1f5f9" stroke="#64748b"/>
+      <text x="360" y="44" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">📞 통화 시작</text>
+      <line x1="360" y1="60" x2="360" y2="78" stroke="#475569" marker-end="url(#arr2)"/>
+
+      <rect x="180" y="78" width="360" height="80" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+      <text x="360" y="102" text-anchor="middle" font-size="13" font-weight="700" fill="#1e3a8a">메인 봇 (프롬프트)</text>
+      <text x="360" y="122" text-anchor="middle" font-size="10" fill="#1e40af">인사 + 자유 대화 + 의도 파악</text>
+      <text x="360" y="142" text-anchor="middle" font-size="9.5" font-style="italic" fill="#475569">→ 절차 필요한 의도 들으면 서브로 넘김</text>
+
+      <line x1="240" y1="158" x2="135" y2="200" stroke="#475569" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <line x1="360" y1="158" x2="360" y2="200" stroke="#475569" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <line x1="480" y1="158" x2="585" y2="200" stroke="#475569" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+      <text x="170" y="186" font-size="9" font-weight="600" fill="#475569">"환불요"</text>
+      <text x="375" y="186" font-size="9" font-weight="600" fill="#475569">"결제 변경"</text>
+      <text x="540" y="186" font-size="9" font-weight="600" fill="#475569">"English?"</text>
+
+      <rect x="40" y="206" width="190" height="84" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="135" y="228" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">환불 봇 (플로우)</text>
+      <text x="135" y="250" text-anchor="middle" font-size="9.5" fill="#15803d">주문번호 → 사유 → 확인</text>
+      <text x="135" y="268" text-anchor="middle" font-size="9.5" fill="#15803d">→ 환불 API → 확정</text>
+
+      <rect x="265" y="206" width="190" height="84" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="360" y="228" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">결제 변경 봇 (플로우)</text>
+      <text x="360" y="250" text-anchor="middle" font-size="9.5" fill="#15803d">본인확인 → 인증번호</text>
+      <text x="360" y="268" text-anchor="middle" font-size="9.5" fill="#15803d">→ 결제수단 변경</text>
+
+      <rect x="490" y="206" width="190" height="84" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="585" y="228" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a8a">외국어 봇 (프롬프트)</text>
+      <text x="585" y="250" text-anchor="middle" font-size="9.5" fill="#1e40af">페르소나만 영어로</text>
+      <text x="585" y="268" text-anchor="middle" font-size="9.5" fill="#1e40af">자유 응대는 동일</text>
+
+      <text x="360" y="310" text-anchor="middle" font-size="10" font-style="italic" fill="#64748b">↑ 서브 봇 완료 시 메인으로 자동 복귀</text>
+    </svg>
+  </div>
+
+  <div class="quote">
+    💡 첫 진입은 의도가 미정이라 <b>프롬프트가 자연스럽다</b>. 절차 필요한 분기만 <b>플로우로 만들어 누락 방지</b>. 분기가 끝나면 메인으로 돌아옴.
+  </div>
+</section>
+
+<!-- ==== 3. WHEN BRANCHES vs WHEN NOT ==== -->
+<section class="page">
+  <h2><span class="num" style="background:var(--c-flow)">3</span>분기가 필요할 때 vs 필요 없을 때</h2>
+  <p class="muted">서브 봇(분기)이 <b>없어도 콜봇은 잘 동작</b>한다. 단순 안내·FAQ 봇은 메인 하나로 충분. 분기는 절차가 명시적으로 필요할 때만 추가.</p>
+
+  <div class="card prompt nobreak" style="margin-top:10pt">
+    <h4>경우 1 — 분기가 아예 없는 단순 콜봇</h4>
+    <p class="small">예: 단순 안내봇, FAQ 봇, 인사 봇. 한 통화 묶음 안에 메인 봇만 두면 됨. 모든 발화에 메인 봇이 응대하고 종료. → 빌더가 분기를 만들지 않으면 서브 봇은 0개, 시스템은 그대로 동작.</p>
+  </div>
+
+  <div class="card flow nobreak" style="margin-top:10pt">
+    <h4>경우 2 — 분기는 있는데 이번 발화가 트리거 안 됨</h4>
+    <p class="small"><b>예 발화</b>: "위치가 어디예요?" → 공통 규칙 매치 없음 → 메인 봇이 자기 지식 자료(위치 안내)로 답변 생성 → "강남역 3번 출구에서 도보 5분입니다". <b>서브 봇은 건드리지도 않음.</b> 트리거 매치되는 발화가 올 때까지 메인이 계속 응대.</p>
+  </div>
+
+  <div class="card flow nobreak" style="margin-top:10pt">
+    <h4>경우 3 — 분기 트리거 매치 (메인 → 서브)</h4>
+    <p class="small"><b>예 발화</b>: "환불하고 싶어요" → 메인 봇 의도 분류 = "환불" → 환불 봇으로 핸드오프 (변수도 그대로 인계) → 환불 봇이 절차 진행 (주문번호 → 사유 → 환불 API → 확인 SMS) → 환불 봇 종료 → 메인 봇으로 복귀 → 다음 발화 대기.</p>
+  </div>
+
+  <div class="quote">
+    💡 메인 봇이 <b>기본 응답자</b>. 트리거 안 맞으면 메인이 계속 함. 필요할 때만 서브가 잠깐 끼어들어 절차 처리하고 다시 메인으로. <b>분기 없이 메인 하나만 두는 것도 완전히 OK.</b>
+  </div>
+</section>
+
+<!-- ==== 4. TURN FLOW ==== -->
+<section class="page">
+  <h2><span class="num" style="background:var(--c-accent)">4</span>통화 흐름 — 발화 한 번이 처리되는 2단계</h2>
+  <p class="muted">사용자 발화 한 번이 시스템 안에서 거치는 2단계. <b>매 발화마다 ① 공통 규칙 검사가 항상 첫 단계</b>이고, ② 봇 실행 결과에 따라 다음 활성 봇이 갱신된다.</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 460" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <defs><marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+
+      <rect x="40" y="20" width="640" height="44" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+      <text x="360" y="46" text-anchor="middle" font-size="12" fill="#0f172a">👤 사용자 발화 — <tspan font-weight="700">"환불하고 싶어요"</tspan></text>
+      <line x1="360" y1="64" x2="360" y2="84" stroke="#475569" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <rect x="200" y="84" width="320" height="40" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="360" y="108" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a8a">음성 → 텍스트 변환</text>
+      <line x1="360" y1="124" x2="360" y2="144" stroke="#475569" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <rect x="60" y="144" width="600" height="110" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+      <text x="80" y="168" font-size="11" font-weight="700" fill="#92400e">①</text>
+      <text x="360" y="168" text-anchor="middle" font-size="14" font-weight="700" fill="#92400e">공통 규칙 검사</text>
+      <text x="360" y="192" text-anchor="middle" font-size="10.5" fill="#9a3412">통화 어디서든 발동되는 룰부터 점검</text>
+      <text x="360" y="212" text-anchor="middle" font-size="10" fill="#9a3412">예: "상담사" 발화 → 사람으로 전환 · "취소" → 통화 종료</text>
+      <text x="360" y="232" text-anchor="middle" font-size="10" font-style="italic" fill="#92400e">매치 안되면 다음 단계로, 매치되면 즉시 액션 (아래 건너뜀)</text>
+      <line x1="360" y1="254" x2="360" y2="274" stroke="#475569" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <rect x="60" y="274" width="600" height="130" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+      <text x="80" y="298" font-size="11" font-weight="700" fill="#15803d">②</text>
+      <text x="360" y="298" text-anchor="middle" font-size="14" font-weight="700" fill="#15803d">현재 활성 봇 실행</text>
+      <text x="360" y="320" text-anchor="middle" font-size="10.5" fill="#475569">통화 시작 시 활성 = 메인 봇. 핸드오프 후엔 그 서브 봇이 활성.</text>
+      <text x="360" y="340" text-anchor="middle" font-size="10" fill="#475569">프롬프트 봇 → LLM에 페르소나·지식·도구 묶어 호출 → 응답 생성</text>
+      <text x="360" y="358" text-anchor="middle" font-size="10" fill="#475569">플로우 봇 → 현재 노드 실행 (질문·정보 추출·API 호출 등)</text>
+      <text x="360" y="380" text-anchor="middle" font-size="10" font-style="italic" fill="#15803d">실행 결과로 ① 응답 생성 ② 다음 활성 봇 갱신 (핸드오프 시) ③ 변수 갱신</text>
+      <line x1="360" y1="404" x2="360" y2="420" stroke="#475569" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <rect x="200" y="420" width="320" height="36" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="360" y="442" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a8a">TTS → 응답 음성 → 사용자</text>
+    </svg>
+  </div>
+
+  <h3>핸드오프는 별도 단계가 아님</h3>
+  <p>"메인 봇 → 환불 봇" 전환은 ② <b>봇 실행 결과의 일부</b>로 처리된다. 메인 봇 LLM이 응답할 때 "환불 봇으로 넘기자"는 신호를 같이 내면, 다음 활성 봇이 환불 봇으로 갱신될 뿐. <b>별도 라우팅 서비스 없음.</b></p>
+
+  <p class="techbox"><b>내부 명칭 (개발자용)</b>: ① = <span class="kbd">Dispatcher</span> · ② = <span class="kbd">Executor</span>. <span class="kbd">Skill.is_frontdoor</span>는 "이 스킬이 메인 진입점"이라는 플래그일 뿐, 별도 서비스 아님. 핸드오프는 봇 실행 결과의 후처리 (활성 봇 ID 갱신 + 변수 인계)로 단순화.</p>
+
+  <h3>변수 컨테이너 — 통화 내내 공유되는 메모</h3>
+  <p class="small">2단계 내내 <b>같은 변수 묶음</b>이 공유된다. 메인 봇이 받은 이름을 환불 봇이 그대로 쓰고, 환불 봇이 채운 주문번호를 다음 봇이 참조 가능. 핸드오프해도 변수는 끊기지 않음. 변수 출처는 3가지:</p>
+  <ul class="small">
+    <li><b>① 통화 시작 시 주입</b> — SDK·웹훅·아웃바운드 캠페인이 미리 넣어둠 (customer_name, phone 등)</li>
+    <li><b>② 시스템 자동</b> — 통화 ID·시작 시각·발신 번호 등 시스템이 자동 채움</li>
+    <li><b>③ 대화 중 추출</b> — 플로우 봇이 사용자 발화에서 뽑아냄 (주문번호·환불 사유·날짜·시간 등)</li>
+  </ul>
+</section>
+
+<!-- ==== 5. CODE STRUCTURE PRINCIPLE ==== -->
+<section class="page">
+  <h2><span class="num" style="background:var(--c-prompt)">5</span>코드 구조 원칙 — 비즈니스 규칙은 한 곳에</h2>
+  <p class="muted">코드를 4개 층으로 나눈다. 비즈니스 규칙은 가장 안쪽 층에만 두고, 바깥 층은 DB·외부 API 같은 도구를 다룬다.</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 440" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <rect x="60" y="20" width="600" height="80" rx="12" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+      <text x="80" y="46" font-size="11" font-weight="700" fill="#64748b">바깥</text>
+      <text x="360" y="46" text-anchor="middle" font-size="14" font-weight="700" fill="#0f172a">외부 노출</text>
+      <text x="360" y="68" text-anchor="middle" font-size="10.5" fill="#475569">웹 화면이 호출하는 API · WebSocket으로 음성 주고받기</text>
+      <text x="360" y="88" text-anchor="middle" font-size="9.5" fill="#64748b">"이런 요청을 받으면 이렇게 응답한다"의 입출구</text>
+
+      <text x="360" y="114" text-anchor="middle" font-size="11" font-weight="700" fill="#475569">▼ 의존</text>
+
+      <rect x="60" y="128" width="600" height="80" rx="12" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+      <text x="80" y="154" font-size="11" font-weight="700" fill="#f59e0b">중간</text>
+      <text x="360" y="154" text-anchor="middle" font-size="14" font-weight="700" fill="#92400e">협업 흐름</text>
+      <text x="360" y="174" text-anchor="middle" font-size="10.5" fill="#9a3412">앞 페이지의 3단계 흐름이 여기 있음 — 공통 규칙 검사·라우팅·봇 실행</text>
+      <text x="360" y="194" text-anchor="middle" font-size="9.5" fill="#9a3412">각 봇이 어떻게 함께 일하는지 조립</text>
+
+      <text x="360" y="222" text-anchor="middle" font-size="11" font-weight="700" fill="#475569">▼ 의존</text>
+
+      <rect x="60" y="236" width="600" height="80" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+      <text x="80" y="262" font-size="11" font-weight="700" fill="#2563eb">바깥</text>
+      <text x="360" y="262" text-anchor="middle" font-size="14" font-weight="700" fill="#1e3a8a">외부 시스템 연결</text>
+      <text x="360" y="282" text-anchor="middle" font-size="10.5" fill="#1e40af">DB·LLM 호출·음성 변환·WebSocket — 외부 도구 사용 부분</text>
+      <text x="360" y="302" text-anchor="middle" font-size="9.5" fill="#1e3a8a">실제 데이터·외부 서비스와 대화하는 어댑터</text>
+
+      <text x="360" y="330" text-anchor="middle" font-size="11" font-weight="700" fill="#475569">▼ 의존</text>
+
+      <rect x="60" y="344" width="600" height="80" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+      <text x="80" y="370" font-size="11" font-weight="700" fill="#16a34a">가장 안쪽</text>
+      <text x="360" y="370" text-anchor="middle" font-size="14" font-weight="700" fill="#14532d">비즈니스 규칙</text>
+      <text x="360" y="390" text-anchor="middle" font-size="10.5" font-weight="700" fill="#15803d">통화·봇·스킬·페르소나·지식·도구·변수의 "정의와 규칙"이 여기에만</text>
+      <text x="360" y="410" text-anchor="middle" font-size="9.5" fill="#15803d">예: "메인 봇은 통화당 1명", "환불은 본인확인 후에만"</text>
+    </svg>
+  </div>
+
+  <h3>왜 이렇게 나누나</h3>
+  <p>비즈니스 규칙이 DB 모델이나 API 응답 형태에 섞이면, <b>규칙 하나 바꾸는데 세 군데를 동기화</b>해야 한다. 안쪽에만 두면 DB 바꾸든 LLM 바꾸든 비즈니스 규칙은 그대로 유지.</p>
+
+  <div class="quote">
+    🚨 절대 규칙: <b>비즈니스 규칙(예: "메인 봇은 1명만") 절대 DB 모델이나 API 응답 형태에 박지 말 것.</b> 가장 안쪽 층에만 둔다. 새 기능 만들 때 항상 ① 규칙 정의 → ② 추상 인터페이스 → ③ DB·외부 호출 구현 → ④ 흐름 조립 → ⑤ API 노출 순서.
+  </div>
+
+  <p class="techbox"><b>내부 명칭 (개발자용)</b>: 가장 안쪽 = domain · 외부 시스템 연결 = infrastructure · 협업 흐름 = application · 외부 노출 = api. 각 층은 자기보다 안쪽에만 의존한다.</p>
+</section>
+
+<!-- ==== 6. EXAMPLE ==== -->
+<section class="page">
+  <h2>구체 시나리오 — △△치과 예약 통화 한 통</h2>
+  <p class="muted">앞 페이지의 모든 개념이 한 통화에서 어떻게 맞물리는지.</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 420" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:680px">
+      <rect x="20" y="14" width="680" height="48" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+      <text x="40" y="34" font-size="11" font-weight="700" fill="#0f172a">Turn 1 — 👤 "여보세요"</text>
+      <text x="40" y="52" font-size="9.5" fill="#475569">메인 봇이 응대 → 🤖 "안녕하세요, △△치과입니다. 무엇을 도와드릴까요?"</text>
+
+      <rect x="20" y="70" width="680" height="48" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="40" y="90" font-size="11" font-weight="700" fill="#1e3a8a">Turn 2 — 👤 "내일 예약하려고요"</text>
+      <text x="40" y="108" font-size="9.5" fill="#1e40af">의도="예약" 분류 → 한 줄 요약 생성 + 변수 인계 → <tspan font-weight="700">예약 봇으로 핸드오프 (서브는 깨끗한 history로 시작)</tspan></text>
+
+      <rect x="20" y="126" width="680" height="48" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="40" y="146" font-size="11" font-weight="700" fill="#14532d">Turn 3 — 🤖 예약 봇 진입 → "네, 날짜를 알려주세요"</text>
+      <text x="40" y="164" font-size="9.5" fill="#15803d">현재 단계: 날짜 묻기 → 사용자 발화 대기</text>
+
+      <rect x="20" y="182" width="680" height="48" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="40" y="202" font-size="11" font-weight="700" fill="#14532d">Turn 4 — 👤 "내일 3시요"</text>
+      <text x="40" y="220" font-size="9.5" fill="#15803d">날짜·시간 추출 → 변수 저장 → 다음 단계: 증상 묻기</text>
+
+      <rect x="20" y="238" width="680" height="48" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="40" y="258" font-size="11" font-weight="700" fill="#14532d">Turn 5 — 👤 "충치요"</text>
+      <text x="40" y="276" font-size="9.5" fill="#15803d">증상 추출 → 예약 등록 API → 성공 → 확인 문자 발송</text>
+
+      <rect x="20" y="294" width="680" height="48" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="40" y="314" font-size="11" font-weight="700" fill="#1e3a8a">Turn 6 — 🤖 "예약 완료. 확인 문자 보내드렸어요. 더 도와드릴 게 있나요?"</text>
+      <text x="40" y="332" font-size="9.5" fill="#1e40af">예약 봇 end → 멤버십 정책 = return_to_main → 메인 복귀, 예약봇 대화는 메인 history에 합쳐짐</text>
+
+      <rect x="20" y="350" width="680" height="48" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+      <text x="40" y="370" font-size="11" font-weight="700" fill="#1e3a8a">Turn 7 — 👤 "가격은요?" → 🤖 (가격표 검색) "충치 치료는 평균 X원입니다"</text>
+      <text x="40" y="388" font-size="9.5" fill="#1e40af">메인 봇이 지식 자료 검색 후 응답 → 통화 종료</text>
+    </svg>
+  </div>
+
+  <div class="quote">
+    💡 한 통화 안에서 메인↔서브가 자연스럽게 두 번 바뀌었지만 사용자는 모드 차이를 전혀 느끼지 못함. 변수(이름·전화)는 끝까지 한 묶음.
+  </div>
+</section>
+
+<!-- ==== 7. BASE PROPOSAL ==== -->
+<section class="page">
+  <h2>현재 설계안 — 기본 전제</h2>
+  <p class="muted">앞 페이지의 구조에서 도출한 <b>설계안</b>. PM 검토 후 합의되면 확정. 이견 있으면 다음 페이지의 핵심 논의 항목과 함께 검토.</p>
+
+  <table>
+    <tr><th style="width:25%">항목</th><th>제안</th></tr>
+    <tr><td>최상위 단위</td><td>한 통화 (메인+서브 봇 묶음) — 통화 단위로 일관된 음성·인사말 유지</td></tr>
+    <tr><td>멤버 구조</td><td>메인 1명 + 서브 N명 (필요 시 서브 0개도 OK · 단순 봇 케이스)</td></tr>
+    <tr><td>음성·인사말 위치</td><td>통화 단위에. 특정 서브만 예외적으로 음성 덮어쓰기 허용 (외국어 분기 등)</td></tr>
+    <tr><td>서브 재사용</td><td>같은 서브 봇을 여러 통화 묶음에 공유 가능 (예: 공통 결제 봇)</td></tr>
+    <tr><td>모드 혼용</td><td>한 봇 안에서는 프롬프트/플로우 섞지 않음 — 봇 단위로 모드 분리</td></tr>
+    <tr><td>코드 구조</td><td>비즈니스 규칙은 한 층에만 (DB·API 형식에 섞지 않음)</td></tr>
+    <tr><td>핸드오프 시 변수</td><td>변수 컨텍스트는 통화 단위 1개 객체 — 자동 공유, 별도 인계 불필요</td></tr>
+    <tr><td>핸드오프 시 페르소나</td><td>서브 봇의 시스템 프롬프트로 교체. 메인의 페르소나·지식·도구는 잠시 비활성</td></tr>
+    <tr><td><b>변수 namespace</b></td><td>Skill별 prefix 강제 (예: <span class="kbd">reservation.date</span>, <span class="kbd">refund.reason</span>) — 충돌 방지</td></tr>
+    <tr><td><b>Tool 권한 경계</b></td><td>Tool은 Tenant(고객사) 단위로 묶임. Bot은 <span class="kbd">allowed_tool_ids</span> 화이트리스트로 사용 가능 도구 제한</td></tr>
+    <tr><td><b>Skill 버전 핀</b></td><td>Bot이 특정 Skill 버전 참조 (예: <span class="kbd">결제봇@v2</span>). 자동 업그레이드 없음. 명시적 업그레이드만 새 버전 적용</td></tr>
+    <tr><td><b>관측성 (기본 활성)</b></td><td>turn-level tracing 자동 수집 — latency·cost·노드 ID·LLM 토큰. 운영팀이 통화 흐름을 노드 단위로 추적 가능</td></tr>
+    <tr><td><b>음성 파이프라인</b></td><td>이 문서는 에이전트 구조 한정. STT·TTS·VAD·barge-in·AEC 등 오디오 파이프라인은 별도 인프라 설계서</td></tr>
+  </table>
+
+  <div class="quote">
+    💡 위 13개 전제 + 다음 페이지 6가지 결정이 합의되면 설계 확정. 큰 그림은 단순 — <b>한 통화에 메인+서브 봇 묶음 / 봇은 4가지 자산 / 발화는 2단계 처리 / 비즈니스 규칙은 한 층에만</b>.
+  </div>
+</section>
+
+<!-- ==== 8. DISCUSSION NEEDED ==== -->
+<section class="page">
+  <h2>논의 필요 — PM 의견 받기</h2>
+  <p class="muted">아래 6가지가 합의되면 설계 확정. 각 항목마다 추천안 표시.</p>
+
+  <div class="grid-2">
+    <div class="card accent nobreak">
+      <h4>🔴 분기 이탈 정책</h4>
+      <p class="small"><b>상황</b>: 환불 봇 진행 중 "아 그게 아니고 결제 변경"이라고 말함.</p>
+      <p class="small">A. 무조건 메인 복귀 후 재라우팅<br/>
+        B. 다른 서브로 직접 점프 허용<br/>
+        C. 진행 중인 절차 끝까지 강제 (이탈 금지)</p>
+    </div>
+    <div class="card accent nobreak">
+      <h4>🔴 공통 규칙 우선순위</h4>
+      <p class="small"><b>상황</b>: 통화 단위 공통 규칙("상담사")과 봇 안 공통 규칙이 동시 매치.</p>
+      <p class="small">A. 좁은 범위 우선 (봇 단위)<br/>
+        B. 넓은 범위 우선 (통화 단위)<br/>
+        C. 명시적 우선순위 필드</p>
+    </div>
+    <div class="card accent nobreak">
+      <h4>🔴 서브 봇 종료 시 동작</h4>
+      <p class="small"><b>상황</b>: 환불 봇이 절차 완료하고 end 도달.</p>
+      <p class="small">A. 자동 메인 복귀 / B. 통화 자동 종료 / C. 명시적 신호 (현재 코드)<br/>
+        <b>D. 멤버십에 정책 설정 (추천)</b></p>
+      <p class="small muted">D 예시: 환불봇→return_to_main, 취소봇→end_call, 설문봇→transfer_to:확인봇. 기본값 자동 메인 복귀.</p>
+    </div>
+    <div class="card accent nobreak">
+      <h4>🔴 핸드오프 시 대화 history</h4>
+      <p class="small"><b>상황</b>: 메인이 사용자와 대화 중 환불봇으로 핸드오프.</p>
+      <p class="small">A. 전체 history 그대로<br/>
+        B. 비우고 한 줄 컨텍스트만<br/>
+        <b>C. 메인이 요약해 전달 (추천)</b></p>
+      <p class="small muted">복귀 시엔 서브 대화를 메인 history에 합쳐 자연스러운 후속 대화.</p>
+    </div>
+    <div class="card accent nobreak">
+      <h4>🔴 의도 중첩 처리</h4>
+      <p class="small"><b>상황</b>: "예약 취소하고 환불도 되나요?" — 한 발화에 두 의도.</p>
+      <p class="small"><b>B. 명확화 질문 (MVP 추천)</b><br/>
+        C. 분해 + 순차 처리 (Phase 2)<br/>
+        D. 우선순위 + 후속 확인</p>
+      <p class="small muted">B: 메인이 "어느 것부터?" 되묻기. 안전 100%. 운영하며 빈도 보고 C/D로 진화.</p>
+    </div>
+    <div class="card accent nobreak">
+      <h4>🔴 고객사(Tenant) 레벨 설정 범위</h4>
+      <p class="small"><b>상황</b>: 영업시간·금칙어·상담사 연결 정책이 봇마다 같음.</p>
+      <p class="small">A. Tenant 레벨로 올림 (봇들이 자동 상속)<br/>
+        B. 봇 레벨 유지 (자유도↑ 중복↑)<br/>
+        <b>C. 영업시간·금칙어=Tenant, voice·greeting=통화 단위 (분리, 추천)</b></p>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Callbot Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">●</span>
+          <div>
+            <div class="brand-title">Callbot Console</div>
+            <div class="brand-sub" id="brandSub">vox 내재화 · MVP</div>
+          </div>
+        </div>
+        <nav id="nav">
+          <a data-view="dashboard">대시보드</a>
+          <a data-view="bots">콜봇</a>
+          <a data-view="test-call">테스트 콜</a>
+          <a data-view="calls">통화 로그</a>
+          <a data-view="tenants">고객사</a>
+        </nav>
+        <div class="footer">
+          <div class="mode-pill" id="modePill">초기화…</div>
+          <div class="footer-sub">FastAPI + GCP · self-hosted</div>
+        </div>
+      </aside>
+      <main id="main"></main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "test_user": {
+    "userid": 4002532,
+    "phone": "01082283421",
+    "note": "실 테스트 데이터 — 사용자 제공. 추후 MCP 도구(reservationNo 필요) 호출 시 함께 사용. GCP 키 설정 후 음성 시나리오에도 활용."
+  },
+  "scenarios": [
+    {
+      "name": "환불 문의 — userId 기반",
+      "text": "안녕하세요, 제 userId는 4002532이고 전화번호는 01082283421이에요. 예약 정보 좀 알려주세요.",
+      "expected_tool_hint": "get_reservation_summary 호출 시도 시 reservationNo 추가로 요청해야 함"
+    }
+  ]
+}
