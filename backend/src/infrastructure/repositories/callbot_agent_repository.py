@@ -33,6 +33,7 @@ def _to_domain(row: models.CallbotAgent) -> CallbotAgent:
                 order=m.order,
                 branch_trigger=m.branch_trigger,
                 voice_override=m.voice_override,
+                silent_transfer=bool(m.silent_transfer),
             )
             for m in row.memberships
         ],
@@ -106,6 +107,7 @@ class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
                 mrow.order = dm.order
                 mrow.branch_trigger = dm.branch_trigger
                 mrow.voice_override = dm.voice_override
+                mrow.silent_transfer = dm.silent_transfer
             else:
                 self._db.add(models.CallbotMembership(
                     callbot_id=row.id,
@@ -114,6 +116,7 @@ class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
                     order=dm.order,
                     branch_trigger=dm.branch_trigger,
                     voice_override=dm.voice_override,
+                    silent_transfer=dm.silent_transfer,
                 ))
 
         await self._db.commit()
