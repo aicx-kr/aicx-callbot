@@ -2,6 +2,11 @@
 
 DATABASE_URL 은 settings 에서 동적으로 주입한다.
 sqlite+aiosqlite (로컬) 와 postgresql+asyncpg (운영) 둘 다 지원.
+
+주의: configparser 의 BasicInterpolation 이 URL 의 ``%`` 를
+변수 참조로 해석해 에러를 낸다 (예: 비밀번호의 ``%26`` = ``&``).
+따라서 ``alembic.ini`` 의 ``sqlalchemy.url`` 을 거치지 않고,
+``create_async_engine(settings.database_url, ...)`` 으로 직접 엔진을 만든다.
 """
 
 import asyncio
@@ -9,7 +14,7 @@ from logging.config import fileConfig
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
 
@@ -20,9 +25,6 @@ from src.infrastructure.db import Base
 
 config = context.config
 
-# alembic.ini 의 sqlalchemy.url 자리를 settings 에서 채움.
-config.set_main_option("sqlalchemy.url", settings.database_url)
-
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -31,9 +33,8 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     """오프라인 (SQL 파일 출력) 모드."""
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=settings.database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -51,9 +52,8 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     """온라인 (실제 DB 연결) 모드 — async engine."""
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    connectable = create_async_engine(
+        settings.database_url,
         poolclass=pool.NullPool,
     )
 
