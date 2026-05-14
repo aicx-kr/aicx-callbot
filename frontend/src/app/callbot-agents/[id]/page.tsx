@@ -6,7 +6,7 @@ import Link from 'next/link';
 import useSWR from 'swr';
 import clsx from 'clsx';
 import {
-  Bot as BotIcon, Save, ArrowLeft, Plus, X, Volume2, FileText, GitBranch,
+  Bot as BotIcon, Save, ArrowLeft, Plus, X, Volume2, VolumeX, FileText, GitBranch,
   Mic, Hash, Sparkles, Languages,
 } from 'lucide-react';
 import { api, fetcher } from '@/lib/api';
@@ -105,6 +105,17 @@ export default function CallbotAgentPage({ params }: { params: Promise<{ id: str
     await setSubTrigger(subBotId, next);
   }
 
+  async function setMemberSilent(memberId: number, silent: boolean) {
+    if (!agent) return;
+    try {
+      await api.patch(`/api/callbot-agents/${callbotId}/members/${memberId}`, { silent_transfer: silent });
+      await mutate();
+      toast(silent ? '조용한 인계로 변경' : '안내 멘트 인계로 변경', 'success');
+    } catch (e) {
+      toast(`설정 실패: ${(e as Error).message}`, 'error');
+    }
+  }
+
   if (!agent) return <div className="p-8 text-ink-400">불러오는 중…</div>;
 
   const tenantBots = (allBots || []).filter((b) => b.tenant_id === agent.tenant_id);
@@ -198,6 +209,23 @@ export default function CallbotAgentPage({ params }: { params: Promise<{ id: str
                     <span className="text-xs text-ink-500 dark:text-ink-400 truncate max-w-[280px]" title={m.branch_trigger}>
                       {m.branch_trigger || '(트리거 미정)'}
                     </span>
+                  )}
+                  {m.role === 'sub' && (
+                    <button
+                      onClick={() => setMemberSilent(m.id, !m.silent_transfer)}
+                      className={clsx(
+                        'flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 transition-colors',
+                        m.silent_transfer
+                          ? 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 hover:bg-sky-200 dark:hover:bg-sky-900/60'
+                          : 'bg-ink-100 dark:bg-ink-700 text-ink-600 dark:text-ink-300 hover:bg-ink-200 dark:hover:bg-ink-600',
+                      )}
+                      title={m.silent_transfer
+                        ? '조용한 인계 — 안내 멘트 없이 바로 sub 봇 응답. 클릭으로 안내 멘트 인계로 전환.'
+                        : '안내 멘트 인계 — 짧은 안내 후 sub 봇 응답. 클릭으로 조용한 인계로 전환.'}
+                    >
+                      {m.silent_transfer ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                      {m.silent_transfer ? '조용히' : '안내'}
+                    </button>
                   )}
                   <button onClick={() => removeMember(m.id)} className="p-1 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded shrink-0" title="제거">
                     <X className="w-3.5 h-3.5" />
