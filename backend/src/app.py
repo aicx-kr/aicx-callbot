@@ -3,37 +3,26 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .api.routers import bots, callbot_agents, calls, knowledge, mcp_servers, skills, tenants, tools, transcripts
 from .api.ws import voice
-from .infrastructure.db import Base, SessionLocal, engine
+from .infrastructure.db import SessionLocal
 from .infrastructure.seed import seed_if_empty
 
 
-def _migrate_sqlite_add_columns():
-    """SQLite는 ALTER TABLE ADD COLUMN만 지원 — 누락된 컬럼을 비파괴적으로 추가."""
-    from sqlalchemy import inspect, text
-
-    pending = [
-        ("bots", "branches", "TEXT DEFAULT '[]'"),
-        ("bots", "voice_rules", "TEXT DEFAULT ''"),
-        ("call_sessions", "dynamic_vars", "TEXT DEFAULT '{}'"),
-        ("callbot_agents", "global_rules", "TEXT DEFAULT '[]'"),
-        ("skills", "allowed_tool_names", "TEXT DEFAULT '[]'"),
-        ("bots", "external_kb_enabled", "INTEGER DEFAULT 0"),
-        ("bots", "external_kb_inquiry_types", "TEXT DEFAULT '[]'"),
-    ]
-    insp = inspect(engine)
-    with engine.begin() as conn:
-        for table, col, decl in pending:
-            if table not in insp.get_table_names():
-                continue
-            existing = {c["name"] for c in insp.get_columns(table)}
-            if col not in existing:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {decl}"))
+def _run_alembic_upgrade() -> None:
+    """startup 시 alembic upgrade head 자동 실행.
+    K8s 환경에선 Init Container 로 빼는 게 더 깔끔하지만 일단 lifespan 통합.
+    """
+    backend_root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(backend_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_root / "alembic"))
+    command.upgrade(cfg, "head")
 
 
 def _backfill_callbot_agents(db):
@@ -45,7 +34,6 @@ def _backfill_callbot_agents(db):
 
     tenants = db.query(M.Tenant).all()
     for t in tenants:
-        # 이미 CallbotAgent가 있으면 skip
         existing = db.query(M.CallbotAgent).filter(M.CallbotAgent.tenant_id == t.id).first()
         if existing:
             continue
@@ -62,8 +50,7 @@ def _backfill_callbot_agents(db):
             llm_model=primary.llm_model,
         )
         db.add(callbot)
-        db.flush()  # callbot.id 확보
-        # 기존 branches: bot_id → branch_trigger 맵
+        db.flush()
         branch_triggers: dict[int, str] = {}
         for b in bots:
             for br in (b.branches or []):
@@ -83,8 +70,7 @@ def _backfill_callbot_agents(db):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    _migrate_sqlite_add_columns()
+    _run_alembic_upgrade()
     db = SessionLocal()
     try:
         seed_if_empty(db)
