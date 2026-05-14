@@ -15,7 +15,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..core.config import settings
@@ -23,6 +22,7 @@ from ..domain.global_rule import GlobalAction, dispatch as dispatch_global_rules
 from ..domain.ports import ChatMessage, LLMPort, STTPort, ToolSpec, TTSPort, VADPort
 from ..domain.variable import VariableContext
 from ..infrastructure import models
+from ..infrastructure.db import SessionLocal
 from .post_call import analyze_session
 from .skill_runtime import build_runtime, find_bot, parse_signal_and_strip
 from .tool_runtime import execute_tool
@@ -186,9 +186,17 @@ class _SessionState:
 
 
 class VoiceSession:
+    """통화 단위 비동기 오케스트레이터.
+
+    AsyncSession 격리 정책: VoiceSession 은 self.db 를 보관하지 않는다.
+    STT/LLM/TTS/tracer 등 각 비동기 task 가 동시 실행되는 환경에서 단일
+    AsyncSession 을 공유하면 sqlalchemy.exc.IllegalStateChangeError 가
+    발생한다. DB 접근이 필요한 모든 메서드는 `async with SessionLocal() as db:`
+    로 자체 세션을 열고 즉시 close 한다.
+    """
+
     def __init__(
         self,
-        db: AsyncSession,
         session_id: int,
         bot_id: int,
         stt: STTPort,
@@ -199,7 +207,6 @@ class VoiceSession:
         send_json: SendJSON,
         sample_rate: int = 16000,
     ):
-        self.db = db
         self.session_id = session_id
         self.bot_id = bot_id
         self.stt = stt
@@ -213,7 +220,7 @@ class VoiceSession:
         self._audio_q: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._stt_task: asyncio.Task | None = None
         self._closed = False
-        self._tracer = TraceRecorder(db, session_id)
+        self._tracer = TraceRecorder(session_id)
 
     async def _check_global_rules(self, user_text: str) -> bool:
         """공통 규칙 매칭 검사. 매치되면 액션 실행 후 True 반환.
@@ -224,15 +231,21 @@ class VoiceSession:
             .where(models.CallbotMembership.bot_id == self.bot_id)
             .options(selectinload(models.CallbotMembership.callbot))
         )
-        membership = (await self.db.execute(stmt)).scalar_one_or_none()
-        if not membership or not membership.callbot or not membership.callbot.global_rules:
+        async with SessionLocal() as db:
+            membership = (await db.execute(stmt)).scalar_one_or_none()
+            rules = (
+                membership.callbot.global_rules
+                if membership and membership.callbot and membership.callbot.global_rules
+                else None
+            )
+        if not rules:
             return False
 
         rule_id, rule_start = await self._tracer.start(
             "global_rule_check", "span",
-            input={"text": user_text, "rules_count": len(membership.callbot.global_rules)},
+            input={"text": user_text, "rules_count": len(rules)},
         )
-        matched = dispatch_global_rules(membership.callbot.global_rules, user_text)
+        matched = dispatch_global_rules(rules, user_text)
         await self._tracer.end(
             rule_id, rule_start,
             meta={"matched": matched.pattern if matched else None,
@@ -279,26 +292,27 @@ class VoiceSession:
         """
         if not target_bot_id:
             return False
-        # 현재 통화 봇이 속한 콜봇을 찾고, 그 콜봇 안에서 target 멤버십 조회
-        current_stmt = select(models.CallbotMembership).where(
-            models.CallbotMembership.bot_id == self.bot_id
-        ).limit(1)
-        current_membership = (await self.db.execute(current_stmt)).scalars().first()
-        if current_membership is not None:
-            target_stmt = select(models.CallbotMembership).where(
-                models.CallbotMembership.callbot_id == current_membership.callbot_id,
-                models.CallbotMembership.bot_id == target_bot_id,
+        async with SessionLocal() as db:
+            # 현재 통화 봇이 속한 콜봇을 찾고, 그 콜봇 안에서 target 멤버십 조회
+            current_stmt = select(models.CallbotMembership).where(
+                models.CallbotMembership.bot_id == self.bot_id
             ).limit(1)
-            target_membership = (await self.db.execute(target_stmt)).scalars().first()
-            if target_membership is not None:
-                return bool(getattr(target_membership, "silent_transfer", False))
-        # fallback — 어느 콜봇에 속한 멤버십이라도 첫 번째 행 사용
-        any_stmt = select(models.CallbotMembership).where(
-            models.CallbotMembership.bot_id == target_bot_id
-        ).limit(1)
-        any_membership = (await self.db.execute(any_stmt)).scalars().first()
-        if any_membership is not None:
-            return bool(getattr(any_membership, "silent_transfer", False))
+            current_membership = (await db.execute(current_stmt)).scalars().first()
+            if current_membership is not None:
+                target_stmt = select(models.CallbotMembership).where(
+                    models.CallbotMembership.callbot_id == current_membership.callbot_id,
+                    models.CallbotMembership.bot_id == target_bot_id,
+                ).limit(1)
+                target_membership = (await db.execute(target_stmt)).scalars().first()
+                if target_membership is not None:
+                    return bool(getattr(target_membership, "silent_transfer", False))
+            # fallback — 어느 콜봇에 속한 멤버십이라도 첫 번째 행 사용
+            any_stmt = select(models.CallbotMembership).where(
+                models.CallbotMembership.bot_id == target_bot_id
+            ).limit(1)
+            any_membership = (await db.execute(any_stmt)).scalars().first()
+            if any_membership is not None:
+                return bool(getattr(any_membership, "silent_transfer", False))
         return False
 
     # ---------- 상태 전이 ----------
@@ -329,21 +343,23 @@ class VoiceSession:
         await self.set_state("idle")
 
         # System + Dynamic 변수 채움 (vox VOX_AGENT_STRUCTURE §5)
-        sess = await self.db.get(models.CallSession, self.session_id)
         self.state.var_ctx.set_system("call_id", str(self.session_id))
-        if sess:
-            self.state.var_ctx.set_system("room_id", sess.room_id)
-            self.state.var_ctx.set_system("started_at", sess.started_at.isoformat() if sess.started_at else "")
-            # SDK/웹훅이 주입한 dynamic 변수 — calls/start payload.vars로 들어옴
-            if sess.dynamic_vars:
-                self.state.var_ctx.merge_dynamic(dict(sess.dynamic_vars))
+        async with SessionLocal() as db:
+            sess = await db.get(models.CallSession, self.session_id)
+            if sess:
+                self.state.var_ctx.set_system("room_id", sess.room_id)
+                self.state.var_ctx.set_system("started_at", sess.started_at.isoformat() if sess.started_at else "")
+                # SDK/웹훅이 주입한 dynamic 변수 — calls/start payload.vars로 들어옴
+                if sess.dynamic_vars:
+                    self.state.var_ctx.merge_dynamic(dict(sess.dynamic_vars))
         self.state.var_ctx.set_system("bot_id", str(self.bot_id))
 
         # session_start 자동 호출 도구 실행 (vox pre-call 패턴) — 인사말 전에
         await self._run_auto_calls("session_start")
 
         # 인사말은 텍스트로 먼저 보냄 (음성 모드면 TTS도 함께)
-        runtime, skill = await build_runtime(self.db, self.bot_id, None, auto_context=self.state.auto_context, variables=self._all_vars())
+        async with SessionLocal() as db:
+            runtime, skill = await build_runtime(db, self.bot_id, None, auto_context=self.state.auto_context, variables=self._all_vars())
         self.state.active_skill = skill
         if runtime.greeting:
             greeting = self.state.var_ctx.resolve(runtime.greeting)
@@ -367,26 +383,30 @@ class VoiceSession:
         if self.state.pending_runtime_task and not self.state.pending_runtime_task.done():
             self.state.pending_runtime_task.cancel()
         await self._audio_q.put(None)
+        # 세션 격리: 종료 commit 은 자체 SessionLocal 로 — STT/LLM/TTS task 가 보유한 세션과 충돌 X
         # async lazy load 불가 → bot 관계 selectinload 로 함께 가져오기
         stmt = (
             select(models.CallSession)
             .where(models.CallSession.id == self.session_id)
             .options(selectinload(models.CallSession.bot))
         )
-        sess = (await self.db.execute(stmt)).scalar_one_or_none()
-        bot_model = None
-        if sess and sess.status != "ended":
-            from datetime import datetime
+        model_name = "gemini-3.1-flash-lite"
+        async with SessionLocal() as db:
+            sess = (await db.execute(stmt)).scalar_one_or_none()
+            if sess and sess.status != "ended":
+                from datetime import datetime
 
-            sess.status = "ended"
-            sess.ended_at = datetime.utcnow()
-            sess.end_reason = reason
-            bot_model = sess.bot
-            await self.db.commit()
+                sess.status = "ended"
+                sess.ended_at = datetime.utcnow()
+                sess.end_reason = reason
+                if sess.bot and sess.bot.llm_model:
+                    model_name = sess.bot.llm_model
+                await db.commit()
+            elif sess and sess.bot and sess.bot.llm_model:
+                model_name = sess.bot.llm_model
         await self.send_json({"type": "end", "reason": reason})
 
-        # 통화 후 분석 (백그라운드 태스크) — 새 DB 세션을 열어 처리
-        model_name = bot_model.llm_model if bot_model else "gemini-3.1-flash-lite"
+        # 통화 후 분석 (백그라운드 태스크) — 자체 SessionLocal 로 처리 (post_call.analyze_session)
         asyncio.create_task(self._run_post_call_analysis(model_name))
 
     # ---------- 내부 로직 ----------
@@ -439,13 +459,14 @@ class VoiceSession:
             input={"interim_chars": len(interim_text), "active_skill": self.state.active_skill},
         )
         try:
-            result = await build_runtime(
-                self.db,
-                self.bot_id,
-                self.state.active_skill,
-                auto_context=self.state.auto_context,
-                variables=self._all_vars(),
-            )
+            async with SessionLocal() as db:
+                result = await build_runtime(
+                    db,
+                    self.bot_id,
+                    self.state.active_skill,
+                    auto_context=self.state.auto_context,
+                    variables=self._all_vars(),
+                )
             await self._tracer.end(span_id, span_start, meta={"ok": True})
             return result
         except Exception as e:
@@ -468,17 +489,19 @@ class VoiceSession:
                 return runtime, used_prefetch
             except Exception as e:
                 logger.warning("prefetched runtime failed, falling back to fresh build: %s", e)
-        runtime, _ = await build_runtime(
-            self.db,
-            self.bot_id,
-            self.state.active_skill,
-            auto_context=self.state.auto_context,
-            variables=self._all_vars(),
-        )
+        async with SessionLocal() as db:
+            runtime, _ = await build_runtime(
+                db,
+                self.bot_id,
+                self.state.active_skill,
+                auto_context=self.state.auto_context,
+                variables=self._all_vars(),
+            )
         return runtime, used_prefetch
 
     async def _run_stt(self) -> None:
-        runtime, _ = await build_runtime(self.db, self.bot_id, self.state.active_skill, auto_context=self.state.auto_context, variables=self._all_vars())
+        async with SessionLocal() as db:
+            runtime, _ = await build_runtime(db, self.bot_id, self.state.active_skill, auto_context=self.state.auto_context, variables=self._all_vars())
 
         chunk_count = 0
         chunk_bytes = 0
@@ -544,9 +567,7 @@ class VoiceSession:
         """최근 N turn의 final transcript를 LLM 히스토리로 변환.
         현재 turn의 user 발화는 호출자가 user_text로 별도 전달하므로 여기엔 미포함.
 
-        주의: 같은 db session에 cached CallSession.transcripts를 보면
-        `_save_transcript`가 FK만 설정해 backref 컬렉션이 갱신 안 됨 (expire_on_commit=False).
-        그래서 relationship 우회 — Transcript 직접 쿼리.
+        세션 격리: 자체 SessionLocal 로 read-only 쿼리 — 다른 task 가 같은 세션을 만지지 않게.
         """
         stmt = (
             select(models.Transcript)
@@ -557,7 +578,8 @@ class VoiceSession:
             )
             .order_by(models.Transcript.id)
         )
-        finals = list((await self.db.execute(stmt)).scalars().all())
+        async with SessionLocal() as db:
+            finals = list((await db.execute(stmt)).scalars().all())
         # 마지막 turn(=방금 저장한 user 발화)은 user_text로 따로 보내므로 제외
         if finals and finals[-1].role == "user":
             finals = finals[:-1]
@@ -644,7 +666,8 @@ class VoiceSession:
                         self.state.var_ctx.set_extracted(k, v)
                     await self.send_json({"type": "extracted", "values": signal.extracted})
                 if signal.next_skill:
-                    bot = await find_bot(self.db, self.bot_id)
+                    async with SessionLocal() as db:
+                        bot = await find_bot(db, self.bot_id)
                     skill_names = {s.name for s in bot.skills} if bot else set()
                     db_tool_names = {t.name for t in bot.tools if t.is_enabled} if bot else set()
                     tool_names = _BUILTIN_TOOL_NAMES | db_tool_names
@@ -699,9 +722,11 @@ class VoiceSession:
 
         실패해도 빈 문자열 반환 (LLM 호출은 계속). 토글 OFF면 즉시 빈 반환.
         """
-        bot = await self.db.get(models.Bot, self.bot_id)
-        if bot is None or not bot.external_kb_enabled:
-            return ""
+        async with SessionLocal() as db:
+            bot = await db.get(models.Bot, self.bot_id)
+            if bot is None or not bot.external_kb_enabled:
+                return ""
+            inquiry_types_raw = bot.external_kb_inquiry_types
         if not settings.document_processor_base_url:
             return ""  # 토글은 켜졌지만 환경 미설정 — 조용히 skip
 
@@ -712,7 +737,7 @@ class VoiceSession:
             input={"q": user_text[:100], "tenant_id": settings.document_processor_tenant_id},
         )
         try:
-            inquiry_types = list(bot.external_kb_inquiry_types or []) or None
+            inquiry_types = list(inquiry_types_raw or []) or None
             results = await dp.search(query=user_text, inquiry_types=inquiry_types)
             formatted = dp.format_results_for_prompt(results)
             await self._tracer.end(
@@ -879,7 +904,8 @@ class VoiceSession:
                     self.state.var_ctx.set_extracted(k, v)
                 await self.send_json({"type": "extracted", "values": signal.extracted})
             if signal.next_skill:
-                bot = await find_bot(self.db, self.bot_id)
+                async with SessionLocal() as db:
+                    bot = await find_bot(db, self.bot_id)
                 skill_names = {s.name for s in bot.skills} if bot else set()
                 if signal.next_skill in skill_names:
                     self.state.active_skill = signal.next_skill
@@ -907,7 +933,8 @@ class VoiceSession:
         빈 리스트는 'legacy: 전체 허용' 의미. builtin(end_call, transfer 등)은 안전 escape이라 항상 노출.
         """
         specs: list[ToolSpec] = list(_BUILTIN_TOOL_SPECS)
-        bot = await find_bot(self.db, self.bot_id)
+        async with SessionLocal() as db:
+            bot = await find_bot(db, self.bot_id)
         if bot is None:
             return specs
 
@@ -1012,7 +1039,10 @@ class VoiceSession:
         if tool_name == "transfer_to_agent":
             target_id = args.get("target_bot_id")
             reason = args.get("reason", "")
-            target_bot = await self.db.get(models.Bot, target_id) if target_id else None
+            async with SessionLocal() as db:
+                target_bot = await db.get(models.Bot, target_id) if target_id else None
+                target_name = target_bot.name if target_bot else None
+                target_bot_id = target_bot.id if target_bot else None
             await self._record_tool_invocation(
                 tool_name, args,
                 result={"signal": "transfer_to_agent", "target_bot_id": target_id, "ok": bool(target_bot)},
@@ -1025,28 +1055,34 @@ class VoiceSession:
             #   bot_id만 교체하고 build_runtime을 새 봇으로 다시 호출 → system_prompt만 sub 봇 페르소나로 갱신.
             #   _build_history는 session_id 기반 DB 쿼리라 sub 봇에서도 동일 history 조회 가능.
             silent = await self._membership_silent_transfer(target_id)
-            self.bot_id = target_bot.id
+            self.bot_id = target_bot_id
             self.state.active_skill = None
             self.state.auto_context = {}
             await self.send_json({
                 "type": "transfer_to_agent", "target_bot_id": target_id,
-                "target_name": target_bot.name, "reason": reason, "silent": silent,
+                "target_name": target_name, "reason": reason, "silent": silent,
             })
-            new_runtime, new_skill = await build_runtime(self.db, self.bot_id, None, variables=self._all_vars())
+            async with SessionLocal() as db:
+                new_runtime, new_skill = await build_runtime(db, self.bot_id, None, variables=self._all_vars())
             self.state.active_skill = new_skill
             if not silent:
-                handover_line = f"네, {target_bot.name}로 안내해드릴게요." if reason else "에이전트 전환했습니다."
+                handover_line = f"네, {target_name}로 안내해드릴게요." if reason else "에이전트 전환했습니다."
                 await self._save_transcript("assistant", handover_line)
                 await self.send_json({"type": "transcript", "role": "assistant", "text": handover_line})
                 await self._speak(handover_line, new_runtime.voice, new_runtime.language)
             return None, True
 
-        # DB tool
-        tool_stmt = (
-            select(models.Tool)
-            .where(models.Tool.bot_id == self.bot_id, models.Tool.name == tool_name)
-        )
-        tool = (await self.db.execute(tool_stmt)).scalar_one_or_none()
+        # DB tool — 자체 세션으로 Tool + Bot 한 번에 로드하고 즉시 close (이후 task 와 격리)
+        import os
+        import re
+        async with SessionLocal() as db:
+            tool_stmt = (
+                select(models.Tool)
+                .where(models.Tool.bot_id == self.bot_id, models.Tool.name == tool_name)
+            )
+            tool = (await db.execute(tool_stmt)).scalar_one_or_none()
+            bot = await db.get(models.Bot, self.bot_id)
+            bot_env = (bot.env_vars if bot and bot.env_vars else {}) or {}
         if tool is None:
             return await self._execute_mcp_for_loop(tool_name, args, turn_id)
 
@@ -1072,10 +1108,6 @@ class VoiceSession:
                 except Exception as e:
                     await self._tracer.end(stall_id, stall_start, error=str(e))
 
-        import os
-        import re
-        bot = await self.db.get(models.Bot, self.bot_id)
-        bot_env = (bot.env_vars if bot and bot.env_vars else {}) or {}
         env: dict[str, str] = {}
         ref_text = (tool.code or "") + " " + str(tool.settings or {})
         for m in re.finditer(r"\{\{(\w+)\}\}", ref_text):
@@ -1115,7 +1147,8 @@ class VoiceSession:
             select(models.MCPServer)
             .where(models.MCPServer.bot_id == self.bot_id, models.MCPServer.is_enabled.is_(True))
         )
-        servers = (await self.db.execute(srv_stmt)).scalars().all()
+        async with SessionLocal() as db:
+            servers = list((await db.execute(srv_stmt)).scalars().all())
         match = None
         for srv in servers:
             for mt in (srv.discovered_tools or []):
@@ -1171,7 +1204,10 @@ class VoiceSession:
             # 허브-앤-스포크: 같은 통화 세션 안에서 봇 컨텍스트 스왑
             target_id = args.get("target_bot_id")
             reason = args.get("reason", "")
-            target_bot = await self.db.get(models.Bot, target_id) if target_id else None
+            async with SessionLocal() as db:
+                target_bot = await db.get(models.Bot, target_id) if target_id else None
+                target_name = target_bot.name if target_bot else None
+                target_bot_id = target_bot.id if target_bot else None
             await self._record_tool_invocation(
                 tool_name, args,
                 result={"signal": "transfer_to_agent", "target_bot_id": target_id, "ok": bool(target_bot)},
@@ -1181,28 +1217,34 @@ class VoiceSession:
                 return
             # AICC-908 — silent_transfer 멤버십 플래그 적용 (자세한 의미는 _execute_tool_for_loop 분기 참조)
             silent = await self._membership_silent_transfer(target_id)
-            self.bot_id = target_bot.id
+            self.bot_id = target_bot_id
             self.state.active_skill = None
             self.state.auto_context = {}
             await self.send_json({
                 "type": "transfer_to_agent", "target_bot_id": target_id,
-                "target_name": target_bot.name, "reason": reason, "silent": silent,
+                "target_name": target_name, "reason": reason, "silent": silent,
             })
-            new_runtime, new_skill = await build_runtime(self.db, self.bot_id, None, variables=self._all_vars())
+            async with SessionLocal() as db:
+                new_runtime, new_skill = await build_runtime(db, self.bot_id, None, variables=self._all_vars())
             self.state.active_skill = new_skill
             if not silent:
-                handover_line = f"네, {target_bot.name}로 안내해드릴게요." if reason else "에이전트 전환했습니다."
+                handover_line = f"네, {target_name}로 안내해드릴게요." if reason else "에이전트 전환했습니다."
                 await self._save_transcript("assistant", handover_line)
                 await self.send_json({"type": "transcript", "role": "assistant", "text": handover_line})
                 await self._speak(handover_line, new_runtime.voice, new_runtime.language)
             return
 
-        # DB에 등록된 도구 찾기
-        tool_stmt = (
-            select(models.Tool)
-            .where(models.Tool.bot_id == self.bot_id, models.Tool.name == tool_name)
-        )
-        tool = (await self.db.execute(tool_stmt)).scalar_one_or_none()
+        # DB에 등록된 도구 + Bot env 를 자체 세션으로 로드 (이후 task 들과 격리)
+        import os
+        import re
+        async with SessionLocal() as db:
+            tool_stmt = (
+                select(models.Tool)
+                .where(models.Tool.bot_id == self.bot_id, models.Tool.name == tool_name)
+            )
+            tool = (await db.execute(tool_stmt)).scalar_one_or_none()
+            bot = await db.get(models.Bot, self.bot_id) if tool else None
+            bot_env = (bot.env_vars if bot and bot.env_vars else {}) or {}
         # DB에 없으면 MCP 서버에서 찾아 proxy
         if not tool:
             await self._handle_mcp_tool(tool_name, args, runtime, turn_id)
@@ -1213,10 +1255,6 @@ class VoiceSession:
         await self.send_json({"type": "tool_call", "name": tool_name, "args": args})
 
         # env: 봇별 env_vars 우선 → 없으면 OS env fallback
-        import os
-        import re
-        bot = await self.db.get(models.Bot, self.bot_id)
-        bot_env = (bot.env_vars if bot and bot.env_vars else {}) or {}
         env: dict[str, str] = {}
         # 도구가 참조하는 모든 placeholder 자동 수집
         ref_text = (tool.code or "") + " " + str(tool.settings or {})
@@ -1302,8 +1340,9 @@ class VoiceSession:
                 error=error,
                 duration_ms=duration_ms,
             )
-            self.db.add(inv)
-            await self.db.commit()
+            async with SessionLocal() as db:
+                db.add(inv)
+                await db.commit()
         except Exception as e:
             logger.warning("record tool invocation failed: %s", e)
 
@@ -1314,7 +1353,8 @@ class VoiceSession:
             select(models.MCPServer)
             .where(models.MCPServer.bot_id == self.bot_id, models.MCPServer.is_enabled.is_(True))
         )
-        servers = (await self.db.execute(srv_stmt)).scalars().all()
+        async with SessionLocal() as db:
+            servers = list((await db.execute(srv_stmt)).scalars().all())
         match = None
         for srv in servers:
             for mt in (srv.discovered_tools or []):
@@ -1408,11 +1448,12 @@ class VoiceSession:
                 models.Tool.auto_call_on == trigger,
             )
         )
-        tools = list((await self.db.execute(tools_stmt)).scalars().all())
-        if not tools:
-            return
-        bot = await self.db.get(models.Bot, self.bot_id)
-        bot_env = (bot.env_vars if bot and bot.env_vars else {}) or {}
+        async with SessionLocal() as db:
+            tools = list((await db.execute(tools_stmt)).scalars().all())
+            if not tools:
+                return
+            bot = await db.get(models.Bot, self.bot_id)
+            bot_env = (bot.env_vars if bot and bot.env_vars else {}) or {}
         for tool in tools:
             ref_text = (tool.code or "") + " " + str(tool.settings or {})
             env: dict[str, str] = {}
@@ -1496,8 +1537,9 @@ class VoiceSession:
 
     async def _save_transcript(self, role: str, text: str) -> None:
         t = models.Transcript(session_id=self.session_id, role=role, text=text, is_final=True)
-        self.db.add(t)
-        sess = await self.db.get(models.CallSession, self.session_id)
-        if sess and sess.status == "pending":
-            sess.status = "active"
-        await self.db.commit()
+        async with SessionLocal() as db:
+            db.add(t)
+            sess = await db.get(models.CallSession, self.session_id)
+            if sess and sess.status == "pending":
+                sess.status = "active"
+            await db.commit()
