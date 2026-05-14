@@ -10,7 +10,6 @@ sqlite+aiosqlite (로컬) 와 postgresql+asyncpg (운영) 둘 다 지원.
 """
 
 import asyncio
-from logging.config import fileConfig
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -25,8 +24,9 @@ from src.infrastructure.db import Base
 
 config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# 의도적으로 fileConfig 호출 X — alembic.ini 의 [logger_root] WARN 이
+# 콜봇 setup_logging (root level=INFO + stdout handler) 을 덮어쓰면
+# application logger.info 가 모두 silent 됨. 콜봇 logger 그대로 사용.
 
 target_metadata = Base.metadata
 
