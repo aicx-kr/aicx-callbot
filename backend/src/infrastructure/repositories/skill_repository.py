@@ -1,8 +1,9 @@
-"""Skill repository — SQLAlchemy 구현."""
+"""Skill repository — SQLAlchemy async 구현."""
 
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...domain.repositories import SkillRepository
 from ...domain.skill import Skill, SkillKind
@@ -37,47 +38,53 @@ def _apply_to_row(row: models.Skill, skill: Skill) -> None:
 
 
 class SqlAlchemySkillRepository(SkillRepository):
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    def get(self, skill_id: int) -> Skill | None:
-        row = self._db.get(models.Skill, skill_id)
+    async def get(self, skill_id: int) -> Skill | None:
+        row = await self._db.get(models.Skill, skill_id)
         return _to_domain(row) if row else None
 
-    def list_by_bot(self, bot_id: int) -> list[Skill]:
-        rows = (
-            self._db.query(models.Skill)
-            .filter(models.Skill.bot_id == bot_id)
+    async def list_by_bot(self, bot_id: int) -> list[Skill]:
+        stmt = (
+            select(models.Skill)
+            .where(models.Skill.bot_id == bot_id)
             .order_by(models.Skill.order, models.Skill.id)
-            .all()
         )
+        rows = (await self._db.execute(stmt)).scalars().all()
         return [_to_domain(r) for r in rows]
 
-    def save(self, skill: Skill) -> Skill:
+    async def save(self, skill: Skill) -> Skill:
         skill.validate()
         if skill.id is None:
             row = models.Skill()
             _apply_to_row(row, skill)
             self._db.add(row)
         else:
-            row = self._db.get(models.Skill, skill.id)
+            row = await self._db.get(models.Skill, skill.id)
             if row is None:
                 raise ValueError(f"Skill {skill.id} not found")
             _apply_to_row(row, skill)
-        self._db.commit()
-        self._db.refresh(row)
+        await self._db.commit()
+        await self._db.refresh(row)
         return _to_domain(row)
 
-    def delete(self, skill_id: int) -> None:
-        row = self._db.get(models.Skill, skill_id)
+    async def delete(self, skill_id: int) -> None:
+        row = await self._db.get(models.Skill, skill_id)
         if row:
-            self._db.delete(row)
-            self._db.commit()
+            await self._db.delete(row)
+            await self._db.commit()
 
-    def clear_other_frontdoors(self, bot_id: int, except_skill_id: int) -> None:
-        self._db.query(models.Skill).filter(
-            models.Skill.bot_id == bot_id,
-            models.Skill.id != except_skill_id,
-            models.Skill.is_frontdoor.is_(True),
-        ).update({models.Skill.is_frontdoor: False}, synchronize_session=False)
-        self._db.commit()
+    async def clear_other_frontdoors(self, bot_id: int, except_skill_id: int) -> None:
+        stmt = (
+            update(models.Skill)
+            .where(
+                models.Skill.bot_id == bot_id,
+                models.Skill.id != except_skill_id,
+                models.Skill.is_frontdoor.is_(True),
+            )
+            .values(is_frontdoor=False)
+            .execution_options(synchronize_session=False)
+        )
+        await self._db.execute(stmt)
+        await self._db.commit()

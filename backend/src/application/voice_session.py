@@ -14,7 +14,9 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..core.config import settings
 from ..domain.global_rule import GlobalAction, dispatch as dispatch_global_rules
@@ -22,7 +24,7 @@ from ..domain.ports import ChatMessage, LLMPort, STTPort, ToolSpec, TTSPort, VAD
 from ..domain.variable import VariableContext
 from ..infrastructure import models
 from .post_call import analyze_session
-from .skill_runtime import build_runtime, parse_signal_and_strip
+from .skill_runtime import build_runtime, find_bot, parse_signal_and_strip
 from .tool_runtime import execute_tool
 from .tracer import TraceRecorder
 
@@ -186,7 +188,7 @@ class _SessionState:
 class VoiceSession:
     def __init__(
         self,
-        db: Session,
+        db: AsyncSession,
         session_id: int,
         bot_id: int,
         stt: STTPort,
@@ -217,20 +219,21 @@ class VoiceSession:
         """공통 규칙 매칭 검사. 매치되면 액션 실행 후 True 반환.
         매치 안 되면 False (LLM 호출 계속).
         """
-        membership = (
-            self.db.query(models.CallbotMembership)
-            .filter(models.CallbotMembership.bot_id == self.bot_id)
-            .first()
+        stmt = (
+            select(models.CallbotMembership)
+            .where(models.CallbotMembership.bot_id == self.bot_id)
+            .options(selectinload(models.CallbotMembership.callbot))
         )
+        membership = (await self.db.execute(stmt)).scalar_one_or_none()
         if not membership or not membership.callbot or not membership.callbot.global_rules:
             return False
 
-        rule_id, rule_start = self._tracer.start(
+        rule_id, rule_start = await self._tracer.start(
             "global_rule_check", "span",
             input={"text": user_text, "rules_count": len(membership.callbot.global_rules)},
         )
         matched = dispatch_global_rules(membership.callbot.global_rules, user_text)
-        self._tracer.end(
+        await self._tracer.end(
             rule_id, rule_start,
             meta={"matched": matched.pattern if matched else None,
                   "action": matched.action.value if matched else None},
@@ -296,7 +299,7 @@ class VoiceSession:
         await self.set_state("idle")
 
         # System + Dynamic 변수 채움 (vox VOX_AGENT_STRUCTURE §5)
-        sess = self.db.get(models.CallSession, self.session_id)
+        sess = await self.db.get(models.CallSession, self.session_id)
         self.state.var_ctx.set_system("call_id", str(self.session_id))
         if sess:
             self.state.var_ctx.set_system("room_id", sess.room_id)
@@ -310,11 +313,11 @@ class VoiceSession:
         await self._run_auto_calls("session_start")
 
         # 인사말은 텍스트로 먼저 보냄 (음성 모드면 TTS도 함께)
-        runtime, skill = build_runtime(self.db, self.bot_id, None, auto_context=self.state.auto_context, variables=self._all_vars())
+        runtime, skill = await build_runtime(self.db, self.bot_id, None, auto_context=self.state.auto_context, variables=self._all_vars())
         self.state.active_skill = skill
         if runtime.greeting:
             greeting = self.state.var_ctx.resolve(runtime.greeting)
-            self._save_transcript("assistant", greeting)
+            await self._save_transcript("assistant", greeting)
             await self.send_json(
                 {"type": "transcript", "role": "assistant", "text": greeting}
             )
@@ -334,7 +337,13 @@ class VoiceSession:
         if self.state.pending_runtime_task and not self.state.pending_runtime_task.done():
             self.state.pending_runtime_task.cancel()
         await self._audio_q.put(None)
-        sess = self.db.get(models.CallSession, self.session_id)
+        # async lazy load 불가 → bot 관계 selectinload 로 함께 가져오기
+        stmt = (
+            select(models.CallSession)
+            .where(models.CallSession.id == self.session_id)
+            .options(selectinload(models.CallSession.bot))
+        )
+        sess = (await self.db.execute(stmt)).scalar_one_or_none()
         bot_model = None
         if sess and sess.status != "ended":
             from datetime import datetime
@@ -343,7 +352,7 @@ class VoiceSession:
             sess.ended_at = datetime.utcnow()
             sess.end_reason = reason
             bot_model = sess.bot
-            self.db.commit()
+            await self.db.commit()
         await self.send_json({"type": "end", "reason": reason})
 
         # 통화 후 분석 (백그라운드 태스크) — 새 DB 세션을 열어 처리
@@ -395,22 +404,22 @@ class VoiceSession:
 
     async def _prefetch_runtime(self, interim_text: str):
         """interim 텍스트로 build_runtime을 백그라운드 실행. tracer span 기록."""
-        span_id, span_start = self._tracer.start(
+        span_id, span_start = await self._tracer.start(
             "prefetch_runtime", "span",
             input={"interim_chars": len(interim_text), "active_skill": self.state.active_skill},
         )
         try:
-            result = build_runtime(
+            result = await build_runtime(
                 self.db,
                 self.bot_id,
                 self.state.active_skill,
                 auto_context=self.state.auto_context,
                 variables=self._all_vars(),
             )
-            self._tracer.end(span_id, span_start, meta={"ok": True})
+            await self._tracer.end(span_id, span_start, meta={"ok": True})
             return result
         except Exception as e:
-            self._tracer.end(span_id, span_start, error=str(e))
+            await self._tracer.end(span_id, span_start, error=str(e))
             raise
 
     async def _consume_prefetched_runtime(self) -> tuple:
@@ -429,7 +438,7 @@ class VoiceSession:
                 return runtime, used_prefetch
             except Exception as e:
                 logger.warning("prefetched runtime failed, falling back to fresh build: %s", e)
-        runtime, _ = build_runtime(
+        runtime, _ = await build_runtime(
             self.db,
             self.bot_id,
             self.state.active_skill,
@@ -439,7 +448,7 @@ class VoiceSession:
         return runtime, used_prefetch
 
     async def _run_stt(self) -> None:
-        runtime, _ = build_runtime(self.db, self.bot_id, self.state.active_skill, auto_context=self.state.auto_context, variables=self._all_vars())
+        runtime, _ = await build_runtime(self.db, self.bot_id, self.state.active_skill, auto_context=self.state.auto_context, variables=self._all_vars())
 
         chunk_count = 0
         chunk_bytes = 0
@@ -454,7 +463,7 @@ class VoiceSession:
                 chunk_bytes += len(item) if item else 0
                 yield item
 
-        stt_id, stt_start = self._tracer.start(
+        stt_id, stt_start = await self._tracer.start(
             "stt", "stt",
             input={"language": runtime.language, "sample_rate": self.sample_rate},
         )
@@ -481,16 +490,16 @@ class VoiceSession:
                 if result.is_final:
                     final_text = result.text
         except asyncio.CancelledError:
-            self._tracer.end(stt_id, stt_start, meta={"cancelled": True, "partials": partial_count, "chunks": chunk_count, "bytes": chunk_bytes})
+            await self._tracer.end(stt_id, stt_start, meta={"cancelled": True, "partials": partial_count, "chunks": chunk_count, "bytes": chunk_bytes})
             return
         except Exception as e:
-            self._tracer.end(stt_id, stt_start, error=str(e), meta={"partials": partial_count, "chunks": chunk_count, "bytes": chunk_bytes})
+            await self._tracer.end(stt_id, stt_start, error=str(e), meta={"partials": partial_count, "chunks": chunk_count, "bytes": chunk_bytes})
             logger.exception("STT error: %s", e)
             await self.send_json({"type": "error", "where": "stt", "message": str(e)})
             await self.set_state("idle")
             return
 
-        self._tracer.end(
+        await self._tracer.end(
             stt_id, stt_start,
             output=final_text or None,
             meta={"partials": partial_count, "final_chars": len(final_text),
@@ -501,7 +510,7 @@ class VoiceSession:
         else:
             await self.set_state("idle")
 
-    def _build_history(self, max_turns: int = 12) -> list[ChatMessage]:
+    async def _build_history(self, max_turns: int = 12) -> list[ChatMessage]:
         """최근 N turn의 final transcript를 LLM 히스토리로 변환.
         현재 turn의 user 발화는 호출자가 user_text로 별도 전달하므로 여기엔 미포함.
 
@@ -509,16 +518,16 @@ class VoiceSession:
         `_save_transcript`가 FK만 설정해 backref 컬렉션이 갱신 안 됨 (expire_on_commit=False).
         그래서 relationship 우회 — Transcript 직접 쿼리.
         """
-        finals = (
-            self.db.query(models.Transcript)
-            .filter(
+        stmt = (
+            select(models.Transcript)
+            .where(
                 models.Transcript.session_id == self.session_id,
                 models.Transcript.is_final.is_(True),
                 models.Transcript.role.in_(["user", "assistant"]),
             )
             .order_by(models.Transcript.id)
-            .all()
         )
+        finals = list((await self.db.execute(stmt)).scalars().all())
         # 마지막 turn(=방금 저장한 user 발화)은 user_text로 따로 보내므로 제외
         if finals and finals[-1].role == "user":
             finals = finals[:-1]
@@ -528,7 +537,7 @@ class VoiceSession:
 
     async def _handle_user_final(self, user_text: str) -> None:
         import time as _time
-        self._save_transcript("user", user_text)
+        await self._save_transcript("user", user_text)
         await self.set_state("thinking")
         # TTFF 시작점: STT final 이후 _handle_user_final 진입 시점
         self.state.turn_t0 = _time.monotonic()
@@ -538,7 +547,7 @@ class VoiceSession:
         if await self._check_global_rules(user_text):
             return  # 룰 매치 시 즉시 액션 후 종료, LLM 호출 X
 
-        history = self._build_history()
+        history = await self._build_history()
 
         # 정규식 보조 추출 — LLM이 instruction을 놓쳐도 보장
         heur = _heuristic_extract(user_text)
@@ -549,13 +558,13 @@ class VoiceSession:
             if any(not self.state.var_ctx.has(k) or self.state.var_ctx.get(k) == v for k, v in heur.items()):
                 await self.send_json({"type": "extracted", "values": heur, "source": "regex"})
 
-        turn_id, turn_start = self._tracer.start(
+        turn_id, turn_start = await self._tracer.start(
             f"turn: {user_text[:60]}", "turn",
             input={"user_text": user_text, "active_skill": self.state.active_skill, "history_turns": len(history)},
         )
         try:
             # 시스템 프롬프트 합성 sub-span (Skill/Knowledge/Tools 머지)
-            build_id, build_start = self._tracer.start(
+            build_id, build_start = await self._tracer.start(
                 "build_prompt", "span", parent_id=turn_id,
                 input={"active_skill": self.state.active_skill},
             )
@@ -566,7 +575,7 @@ class VoiceSession:
             external_kb_text = await self._maybe_fetch_external_kb(user_text, parent_turn_id=turn_id)
             if external_kb_text:
                 resolved_system_prompt = resolved_system_prompt + "\n\n---\n\n" + external_kb_text
-            self._tracer.end(
+            await self._tracer.end(
                 build_id, build_start,
                 meta={"system_prompt_chars": len(resolved_system_prompt), "model": runtime.llm_model,
                       "var_keys": sorted(self.state.var_ctx.keys()),
@@ -576,7 +585,7 @@ class VoiceSession:
 
             # callbot_v0 흡수 #1 (function calling) + #2 (streaming + 문장 TTS)
             # 항상 stream으로 시작. 첫 chunk가 tool_call이면 tool 루프 진입, text면 문장 streaming.
-            tool_specs = self._build_tool_specs()
+            tool_specs = await self._build_tool_specs()
             sentences, signal_tail = await self._run_streaming_turn(
                 turn_id, resolved_system_prompt, user_text, history, runtime, tool_specs,
             )
@@ -587,11 +596,11 @@ class VoiceSession:
                 # parse_signal_and_strip은 SIGNAL TAIL(JSON-looking 마지막 partial)에만 적용.
                 # 일반 문장은 이미 streaming으로 TTS·송출됐으므로 다시 처리하면 중복.
                 raw_signal = signal_tail or ""
-                parse_id, parse_start = self._tracer.start(
+                parse_id, parse_start = await self._tracer.start(
                     "parse_signal", "span", parent_id=turn_id, input={"raw_chars": len(raw_signal)}
                 )
                 body_residual, signal = parse_signal_and_strip(raw_signal)
-                self._tracer.end(
+                await self._tracer.end(
                     parse_id, parse_start,
                     meta={
                         "next_skill": signal.next_skill,
@@ -605,7 +614,7 @@ class VoiceSession:
                         self.state.var_ctx.set_extracted(k, v)
                     await self.send_json({"type": "extracted", "values": signal.extracted})
                 if signal.next_skill:
-                    bot = self.db.get(models.Bot, self.bot_id)
+                    bot = await find_bot(self.db, self.bot_id)
                     skill_names = {s.name for s in bot.skills} if bot else set()
                     db_tool_names = {t.name for t in bot.tools if t.is_enabled} if bot else set()
                     tool_names = _BUILTIN_TOOL_NAMES | db_tool_names
@@ -617,17 +626,17 @@ class VoiceSession:
 
                 # signal_tail에 prose가 섞여 있던 edge case 안전망 — 보통 비어 있다.
                 if body_residual.strip():
-                    self._save_transcript("assistant", body_residual)
+                    await self._save_transcript("assistant", body_residual)
                     await self.send_json({"type": "transcript", "role": "assistant", "text": body_residual})
-                    tts_id, tts_start = self._tracer.start(
+                    tts_id, tts_start = await self._tracer.start(
                         "tts.residual", "tts", parent_id=turn_id,
                         input={"text": body_residual, "voice": runtime.voice, "language": runtime.language},
                     )
                     try:
                         await self._speak(body_residual, runtime.voice, runtime.language)
-                        self._tracer.end(tts_id, tts_start, meta={"chars": len(body_residual)})
+                        await self._tracer.end(tts_id, tts_start, meta={"chars": len(body_residual)})
                     except Exception as e:
-                        self._tracer.end(tts_id, tts_start, error=str(e))
+                        await self._tracer.end(tts_id, tts_start, error=str(e))
                         raise
 
                 # streaming 중 이미 TTS·송출된 문장들은 transcript로 한 번 저장 (DB 행 1개)
@@ -635,7 +644,7 @@ class VoiceSession:
                     full_body = " ".join(sentences)
                     if body_residual.strip():
                         full_body = (full_body + " " + body_residual).strip()
-                    self._save_transcript("assistant", full_body)
+                    await self._save_transcript("assistant", full_body)
         finally:
             # TTFF 계산 (있을 때만): user_text 처리 시작 ~ 첫 PCM 송신
             ttff_ms = None
@@ -646,7 +655,7 @@ class VoiceSession:
             meta = {"active_skill": self.state.active_skill}
             if ttff_ms is not None:
                 meta["ttff_ms"] = ttff_ms
-            self._tracer.end(turn_id, turn_start, meta=meta)
+            await self._tracer.end(turn_id, turn_start, meta=meta)
 
         # barge-in 보호: 발화 도중 사용자가 끼어들면 _on_speech_start가 이미 state를 "listening"
         # (또는 그 뒤 thinking)으로 바꿔놨을 수 있다. 그 경우 idle로 덮어쓰지 않는다.
@@ -660,7 +669,7 @@ class VoiceSession:
 
         실패해도 빈 문자열 반환 (LLM 호출은 계속). 토글 OFF면 즉시 빈 반환.
         """
-        bot = self.db.get(models.Bot, self.bot_id)
+        bot = await self.db.get(models.Bot, self.bot_id)
         if bot is None or not bot.external_kb_enabled:
             return ""
         if not settings.document_processor_base_url:
@@ -668,7 +677,7 @@ class VoiceSession:
 
         from ..infrastructure.adapters import document_processor as dp
 
-        span_id, span_start = self._tracer.start(
+        span_id, span_start = await self._tracer.start(
             "external_kb_retrieve", "span", parent_id=parent_turn_id,
             input={"q": user_text[:100], "tenant_id": settings.document_processor_tenant_id},
         )
@@ -676,14 +685,14 @@ class VoiceSession:
             inquiry_types = list(bot.external_kb_inquiry_types or []) or None
             results = await dp.search(query=user_text, inquiry_types=inquiry_types)
             formatted = dp.format_results_for_prompt(results)
-            self._tracer.end(
+            await self._tracer.end(
                 span_id, span_start,
                 meta={"results_count": len(results), "chars": len(formatted),
                       "inquiry_types": inquiry_types or "(env default)"},
             )
             return formatted
         except Exception as e:
-            self._tracer.end(span_id, span_start, error=str(e))
+            await self._tracer.end(span_id, span_start, error=str(e))
             logger.warning("external_kb_retrieve failed: %s", e)
             return ""
 
@@ -716,7 +725,7 @@ class VoiceSession:
         partial_tail = ""
         first_chunk: LLMResponse | None = None
 
-        llm_id, llm_start = self._tracer.start(
+        llm_id, llm_start = await self._tracer.start(
             "llm.stream", "llm", parent_id=turn_id,
             input={"system_prompt": system_prompt, "user_text": user_text,
                    "model": runtime.llm_model, "tools_count": len(tool_specs),
@@ -734,7 +743,7 @@ class VoiceSession:
                         first_chunk = chunk
                         # 첫 chunk가 tool_call이면 stream 닫고 tool 루프로
                         if chunk.tool_call:
-                            self._tracer.end(
+                            await self._tracer.end(
                                 llm_id, llm_start,
                                 output=f"<tool_call: {chunk.tool_call.name}>",
                                 meta={"model": runtime.llm_model, "tool_call": chunk.tool_call.name,
@@ -760,13 +769,13 @@ class VoiceSession:
                 # signal 파싱을 위해 누적 텍스트 + 만약 partial을 따로 받았다면 합치는 로직 필요 —
                 # 현 구현은 partial도 sentence로 함께 yield되어 sentences에 들어가므로 그대로 join 사용.
             except Exception as e:
-                self._tracer.end(llm_id, llm_start, error=str(e))
+                await self._tracer.end(llm_id, llm_start, error=str(e))
                 logger.exception("LLM stream error: %s", e)
                 await self.send_json({"type": "error", "where": "llm", "message": str(e)})
                 await self.set_state("idle")
                 return None, None
 
-            self._tracer.end(
+            await self._tracer.end(
                 llm_id, llm_start,
                 output=" ".join(sentences),
                 meta={"model": runtime.llm_model, "tool_call": None,
@@ -788,15 +797,15 @@ class VoiceSession:
         callbot_v0와 동일한 패턴.
         """
         await self.send_json({"type": "transcript", "role": "assistant", "text": sentence})
-        tts_id, tts_start = self._tracer.start(
+        tts_id, tts_start = await self._tracer.start(
             f"tts.s{idx}", "tts", parent_id=turn_id,
             input={"text": sentence, "voice": runtime.voice, "language": runtime.language},
         )
         try:
             await self._speak(sentence, runtime.voice, runtime.language)
-            self._tracer.end(tts_id, tts_start, meta={"chars": len(sentence)})
+            await self._tracer.end(tts_id, tts_start, meta={"chars": len(sentence)})
         except Exception as e:
-            self._tracer.end(tts_id, tts_start, error=str(e))
+            await self._tracer.end(tts_id, tts_start, error=str(e))
             raise
 
     async def _run_tool_loop_after_stream(
@@ -840,35 +849,35 @@ class VoiceSession:
                     self.state.var_ctx.set_extracted(k, v)
                 await self.send_json({"type": "extracted", "values": signal.extracted})
             if signal.next_skill:
-                bot = self.db.get(models.Bot, self.bot_id)
+                bot = await find_bot(self.db, self.bot_id)
                 skill_names = {s.name for s in bot.skills} if bot else set()
                 if signal.next_skill in skill_names:
                     self.state.active_skill = signal.next_skill
                     await self.send_json({"type": "skill", "name": signal.next_skill})
             if body:
-                self._save_transcript("assistant", body)
+                await self._save_transcript("assistant", body)
                 await self.send_json({"type": "transcript", "role": "assistant", "text": body})
-                tts_id, tts_start = self._tracer.start(
+                tts_id, tts_start = await self._tracer.start(
                     "tts.followup", "tts", parent_id=turn_id,
                     input={"text": body, "voice": runtime.voice, "language": runtime.language},
                 )
                 try:
                     await self._speak(body, runtime.voice, runtime.language)
-                    self._tracer.end(tts_id, tts_start, meta={"chars": len(body)})
+                    await self._tracer.end(tts_id, tts_start, meta={"chars": len(body)})
                 except Exception as e:
-                    self._tracer.end(tts_id, tts_start, error=str(e))
+                    await self._tracer.end(tts_id, tts_start, error=str(e))
                     raise
 
     # ---------- callbot_v0 흡수 #1 — native function calling 헬퍼 ----------
 
-    def _build_tool_specs(self) -> list[ToolSpec]:
+    async def _build_tool_specs(self) -> list[ToolSpec]:
         """LLM에 노출할 도구 스펙 = builtin + bot.tools(enabled).
 
         callbot_v0 흡수 — 활성 스킬에 allowed_tool_names가 있으면 그 목록만 노출.
         빈 리스트는 'legacy: 전체 허용' 의미. builtin(end_call, transfer 등)은 안전 escape이라 항상 노출.
         """
         specs: list[ToolSpec] = list(_BUILTIN_TOOL_SPECS)
-        bot = self.db.get(models.Bot, self.bot_id)
+        bot = await find_bot(self.db, self.bot_id)
         if bot is None:
             return specs
 
@@ -899,7 +908,7 @@ class VoiceSession:
         history: list[ChatMessage], tools: list[ToolSpec],
     ):
         """generate 호출을 tracer span으로 감싼다. 실패 시 None 반환 + WS error 송신."""
-        llm_id, llm_start = self._tracer.start(
+        llm_id, llm_start = await self._tracer.start(
             span_name, "llm", parent_id=turn_id,
             input={"system_prompt": system_prompt, "user_text": user_text, "model": model,
                    "history": [{"role": h.role, "text": h.text} for h in history],
@@ -910,14 +919,14 @@ class VoiceSession:
                 system_prompt=system_prompt, user_text=user_text, model=model,
                 history=history, tools=tools,
             )
-            self._tracer.end(
+            await self._tracer.end(
                 llm_id, llm_start,
                 output=response.text or (f"<tool_call: {response.tool_call.name}>" if response.tool_call else ""),
                 meta={"model": model, "tool_call": response.tool_call.name if response.tool_call else None},
             )
             return response
         except Exception as e:
-            self._tracer.end(llm_id, llm_start, error=str(e))
+            await self._tracer.end(llm_id, llm_start, error=str(e))
             logger.exception("LLM error: %s", e)
             await self.send_json({"type": "error", "where": "llm", "message": str(e)})
             await self.set_state("idle")
@@ -929,7 +938,7 @@ class VoiceSession:
         prior_model_content, tool_name: str, tool_result, model: str,
         tools: list[ToolSpec],
     ):
-        llm_id, llm_start = self._tracer.start(
+        llm_id, llm_start = await self._tracer.start(
             span_name, "llm", parent_id=turn_id,
             input={"system_prompt": system_prompt, "tool_name": tool_name, "model": model,
                    "tools_count": len(tools)},
@@ -940,14 +949,14 @@ class VoiceSession:
                 prior_model_content=prior_model_content,
                 tool_name=tool_name, tool_result=tool_result, model=model, tools=tools,
             )
-            self._tracer.end(
+            await self._tracer.end(
                 llm_id, llm_start,
                 output=response.text or (f"<tool_call: {response.tool_call.name}>" if response.tool_call else ""),
                 meta={"model": model, "tool_call": response.tool_call.name if response.tool_call else None},
             )
             return response
         except Exception as e:
-            self._tracer.end(llm_id, llm_start, error=str(e))
+            await self._tracer.end(llm_id, llm_start, error=str(e))
             logger.exception("LLM continue_after_tool error: %s", e)
             await self.send_json({"type": "error", "where": "llm", "message": str(e)})
             await self.set_state("idle")
@@ -973,7 +982,7 @@ class VoiceSession:
         if tool_name == "transfer_to_agent":
             target_id = args.get("target_bot_id")
             reason = args.get("reason", "")
-            target_bot = self.db.get(models.Bot, target_id) if target_id else None
+            target_bot = await self.db.get(models.Bot, target_id) if target_id else None
             await self._record_tool_invocation(
                 tool_name, args,
                 result={"signal": "transfer_to_agent", "target_bot_id": target_id, "ok": bool(target_bot)},
@@ -985,20 +994,20 @@ class VoiceSession:
             self.state.active_skill = None
             self.state.auto_context = {}
             await self.send_json({"type": "transfer_to_agent", "target_bot_id": target_id, "target_name": target_bot.name, "reason": reason})
-            new_runtime, new_skill = build_runtime(self.db, self.bot_id, None, variables=self._all_vars())
+            new_runtime, new_skill = await build_runtime(self.db, self.bot_id, None, variables=self._all_vars())
             self.state.active_skill = new_skill
             handover_line = f"네, {target_bot.name}로 안내해드릴게요." if reason else "에이전트 전환했습니다."
-            self._save_transcript("assistant", handover_line)
+            await self._save_transcript("assistant", handover_line)
             await self.send_json({"type": "transcript", "role": "assistant", "text": handover_line})
             await self._speak(handover_line, new_runtime.voice, new_runtime.language)
             return None, True
 
         # DB tool
-        tool = (
-            self.db.query(models.Tool)
-            .filter(models.Tool.bot_id == self.bot_id, models.Tool.name == tool_name)
-            .first()
+        tool_stmt = (
+            select(models.Tool)
+            .where(models.Tool.bot_id == self.bot_id, models.Tool.name == tool_name)
         )
+        tool = (await self.db.execute(tool_stmt)).scalar_one_or_none()
         if tool is None:
             return await self._execute_mcp_for_loop(tool_name, args, turn_id)
 
@@ -1012,21 +1021,21 @@ class VoiceSession:
             msg = (tsettings.get("running_message") or "").strip()
             if msg:
                 msg_resolved = self.state.var_ctx.resolve(msg)
-                stall_id, stall_start = self._tracer.start(
+                stall_id, stall_start = await self._tracer.start(
                     "tts.tool_stall", "tts", parent_id=turn_id,
                     input={"text": msg_resolved, "tool": tool_name},
                 )
                 try:
-                    self._save_transcript("assistant", msg_resolved)
+                    await self._save_transcript("assistant", msg_resolved)
                     await self.send_json({"type": "transcript", "role": "assistant", "text": msg_resolved})
                     await self._speak(msg_resolved, runtime.voice, runtime.language)
-                    self._tracer.end(stall_id, stall_start, meta={"chars": len(msg_resolved)})
+                    await self._tracer.end(stall_id, stall_start, meta={"chars": len(msg_resolved)})
                 except Exception as e:
-                    self._tracer.end(stall_id, stall_start, error=str(e))
+                    await self._tracer.end(stall_id, stall_start, error=str(e))
 
         import os
         import re
-        bot = self.db.get(models.Bot, self.bot_id)
+        bot = await self.db.get(models.Bot, self.bot_id)
         bot_env = (bot.env_vars if bot and bot.env_vars else {}) or {}
         env: dict[str, str] = {}
         ref_text = (tool.code or "") + " " + str(tool.settings or {})
@@ -1034,12 +1043,12 @@ class VoiceSession:
             k = m.group(1)
             env[k] = bot_env.get(k) or os.environ.get(k, "")
 
-        tool_trace_id, tool_trace_start = self._tracer.start(
+        tool_trace_id, tool_trace_start = await self._tracer.start(
             f"tool: {tool_name}", "tool", parent_id=turn_id,
             input={"name": tool_name, "args": args, "type": tool.type},
         )
         result = await execute_tool(tool, args, env)
-        self._tracer.end(
+        await self._tracer.end(
             tool_trace_id, tool_trace_start,
             output=str(result.result) if result.ok else None,
             meta={"duration_ms": result.duration_ms, "ok": result.ok},
@@ -1063,11 +1072,11 @@ class VoiceSession:
     ) -> tuple[object, bool]:
         """MCP 서버 도구 native 실행 — 결과를 LLM에 주입할 수 있게 반환."""
         from . import mcp_client
-        servers = (
-            self.db.query(models.MCPServer)
-            .filter(models.MCPServer.bot_id == self.bot_id, models.MCPServer.is_enabled.is_(True))
-            .all()
+        srv_stmt = (
+            select(models.MCPServer)
+            .where(models.MCPServer.bot_id == self.bot_id, models.MCPServer.is_enabled.is_(True))
         )
+        servers = (await self.db.execute(srv_stmt)).scalars().all()
         match = None
         for srv in servers:
             for mt in (srv.discovered_tools or []):
@@ -1081,14 +1090,14 @@ class VoiceSession:
             return {"error": f"unknown tool: {tool_name}"}, False
 
         await self.send_json({"type": "tool_call", "name": tool_name, "args": args, "via": f"mcp:{match.name}"})
-        tid, ts = self._tracer.start(
+        tid, ts = await self._tracer.start(
             f"mcp_tool: {tool_name}", "tool", parent_id=turn_id,
             input={"name": tool_name, "args": args, "mcp_server": match.name, "base_url": match.base_url},
         )
         result = await mcp_client.call_tool(
             match.base_url, match.mcp_tenant_id, tool_name, args, match.auth_header,
         )
-        self._tracer.end(
+        await self._tracer.end(
             tid, ts,
             output=str(result.result) if result.ok else None,
             meta={"duration_ms": result.duration_ms, "ok": result.ok, "via": "mcp"},
@@ -1123,7 +1132,7 @@ class VoiceSession:
             # 허브-앤-스포크: 같은 통화 세션 안에서 봇 컨텍스트 스왑
             target_id = args.get("target_bot_id")
             reason = args.get("reason", "")
-            target_bot = self.db.get(models.Bot, target_id) if target_id else None
+            target_bot = await self.db.get(models.Bot, target_id) if target_id else None
             await self._record_tool_invocation(
                 tool_name, args,
                 result={"signal": "transfer_to_agent", "target_bot_id": target_id, "ok": bool(target_bot)},
@@ -1135,20 +1144,20 @@ class VoiceSession:
             self.state.active_skill = None
             self.state.auto_context = {}
             await self.send_json({"type": "transfer_to_agent", "target_bot_id": target_id, "target_name": target_bot.name, "reason": reason})
-            new_runtime, new_skill = build_runtime(self.db, self.bot_id, None, variables=self._all_vars())
+            new_runtime, new_skill = await build_runtime(self.db, self.bot_id, None, variables=self._all_vars())
             self.state.active_skill = new_skill
             handover_line = f"네, {target_bot.name}로 안내해드릴게요." if reason else "에이전트 전환했습니다."
-            self._save_transcript("assistant", handover_line)
+            await self._save_transcript("assistant", handover_line)
             await self.send_json({"type": "transcript", "role": "assistant", "text": handover_line})
             await self._speak(handover_line, new_runtime.voice, new_runtime.language)
             return
 
         # DB에 등록된 도구 찾기
-        tool = (
-            self.db.query(models.Tool)
-            .filter(models.Tool.bot_id == self.bot_id, models.Tool.name == tool_name)
-            .first()
+        tool_stmt = (
+            select(models.Tool)
+            .where(models.Tool.bot_id == self.bot_id, models.Tool.name == tool_name)
         )
+        tool = (await self.db.execute(tool_stmt)).scalar_one_or_none()
         # DB에 없으면 MCP 서버에서 찾아 proxy
         if not tool:
             await self._handle_mcp_tool(tool_name, args, runtime, turn_id)
@@ -1161,7 +1170,7 @@ class VoiceSession:
         # env: 봇별 env_vars 우선 → 없으면 OS env fallback
         import os
         import re
-        bot = self.db.get(models.Bot, self.bot_id)
+        bot = await self.db.get(models.Bot, self.bot_id)
         bot_env = (bot.env_vars if bot and bot.env_vars else {}) or {}
         env: dict[str, str] = {}
         # 도구가 참조하는 모든 placeholder 자동 수집
@@ -1170,12 +1179,12 @@ class VoiceSession:
             k = m.group(1)
             env[k] = bot_env.get(k) or os.environ.get(k, "")
 
-        tool_trace_id, tool_trace_start = self._tracer.start(
+        tool_trace_id, tool_trace_start = await self._tracer.start(
             f"tool: {tool_name}", "tool", parent_id=turn_id,
             input={"name": tool_name, "args": args, "type": tool.type},
         )
         result = await execute_tool(tool, args, env)
-        self._tracer.end(
+        await self._tracer.end(
             tool_trace_id, tool_trace_start,
             output=str(result.result) if result.ok else None,
             meta={"duration_ms": result.duration_ms, "ok": result.ok},
@@ -1205,8 +1214,8 @@ class VoiceSession:
                 f"이 결과를 바탕으로 사용자에게 1~2문장 자연어로 답하라. "
                 f"도구 호출 JSON은 출력하지 말 것."
             )
-            followup_history = self._build_history()  # tool 호출 시점의 누적 history 포함
-            llm2_id, llm2_start = self._tracer.start(
+            followup_history = await self._build_history()  # tool 호출 시점의 누적 history 포함
+            llm2_id, llm2_start = await self._tracer.start(
                 "llm.followup", "llm", parent_id=turn_id,
                 input={"system_prompt": runtime.system_prompt, "user_text": followup_user, "model": runtime.llm_model},
             )
@@ -1217,23 +1226,23 @@ class VoiceSession:
                     model=runtime.llm_model,
                     history=followup_history,
                 )
-                self._tracer.end(llm2_id, llm2_start, output=followup, meta={"model": runtime.llm_model})
+                await self._tracer.end(llm2_id, llm2_start, output=followup, meta={"model": runtime.llm_model})
                 body2, _ = parse_signal_and_strip(followup)
                 if body2:
-                    self._save_transcript("assistant", body2)
+                    await self._save_transcript("assistant", body2)
                     await self.send_json({"type": "transcript", "role": "assistant", "text": body2})
-                    tts2_id, tts2_start = self._tracer.start(
+                    tts2_id, tts2_start = await self._tracer.start(
                         "tts.followup", "tts", parent_id=turn_id,
                         input={"text": body2, "voice": runtime.voice, "language": runtime.language},
                     )
                     try:
                         await self._speak(body2, runtime.voice, runtime.language)
-                        self._tracer.end(tts2_id, tts2_start, meta={"chars": len(body2)})
+                        await self._tracer.end(tts2_id, tts2_start, meta={"chars": len(body2)})
                     except Exception as te:
-                        self._tracer.end(tts2_id, tts2_start, error=str(te))
+                        await self._tracer.end(tts2_id, tts2_start, error=str(te))
                         raise
             except Exception as e:
-                self._tracer.end(llm2_id, llm2_start, error=str(e))
+                await self._tracer.end(llm2_id, llm2_start, error=str(e))
                 logger.warning("tool followup failed: %s", e)
 
     async def _record_tool_invocation(
@@ -1249,18 +1258,18 @@ class VoiceSession:
                 duration_ms=duration_ms,
             )
             self.db.add(inv)
-            self.db.commit()
+            await self.db.commit()
         except Exception as e:
             logger.warning("record tool invocation failed: %s", e)
 
     async def _handle_mcp_tool(self, tool_name: str, args: dict, runtime, turn_id: int | None) -> None:
         """LLM이 호출한 이름이 DB Tool에 없으면 MCP 서버들 중 매칭되는 곳으로 proxy."""
         from . import mcp_client
-        servers = (
-            self.db.query(models.MCPServer)
-            .filter(models.MCPServer.bot_id == self.bot_id, models.MCPServer.is_enabled.is_(True))
-            .all()
+        srv_stmt = (
+            select(models.MCPServer)
+            .where(models.MCPServer.bot_id == self.bot_id, models.MCPServer.is_enabled.is_(True))
         )
+        servers = (await self.db.execute(srv_stmt)).scalars().all()
         match = None
         for srv in servers:
             for mt in (srv.discovered_tools or []):
@@ -1276,14 +1285,14 @@ class VoiceSession:
         # VC 치환 — MCP 도구 args도 동일하게
         args = _resolve_args_deep(args, self.state.var_ctx)
         await self.send_json({"type": "tool_call", "name": tool_name, "args": args, "via": f"mcp:{match.name}"})
-        tid, ts = self._tracer.start(
+        tid, ts = await self._tracer.start(
             f"mcp_tool: {tool_name}", "tool", parent_id=turn_id,
             input={"name": tool_name, "args": args, "mcp_server": match.name, "base_url": match.base_url},
         )
         result = await mcp_client.call_tool(
             match.base_url, match.mcp_tenant_id, tool_name, args, match.auth_header,
         )
-        self._tracer.end(
+        await self._tracer.end(
             tid, ts,
             output=str(result.result) if result.ok else None,
             meta={"duration_ms": result.duration_ms, "ok": result.ok, "via": "mcp"},
@@ -1310,8 +1319,8 @@ class VoiceSession:
                 f"방금 MCP 도구 '{tool_name}'를 호출했고 결과는 다음과 같다:\n"
                 f"{result.result}\n\n이 결과를 바탕으로 1~2문장 자연어로 답하라."
             )
-            followup_history = self._build_history()
-            llm2_id, llm2_start = self._tracer.start(
+            followup_history = await self._build_history()
+            llm2_id, llm2_start = await self._tracer.start(
                 "llm.followup", "llm", parent_id=turn_id,
                 input={"system_prompt": runtime.system_prompt, "user_text": followup_user, "model": runtime.llm_model},
             )
@@ -1322,23 +1331,23 @@ class VoiceSession:
                     model=runtime.llm_model,
                     history=followup_history,
                 )
-                self._tracer.end(llm2_id, llm2_start, output=followup, meta={"model": runtime.llm_model})
+                await self._tracer.end(llm2_id, llm2_start, output=followup, meta={"model": runtime.llm_model})
                 body2, _ = parse_signal_and_strip(followup)
                 if body2:
-                    self._save_transcript("assistant", body2)
+                    await self._save_transcript("assistant", body2)
                     await self.send_json({"type": "transcript", "role": "assistant", "text": body2})
-                    tts2_id, tts2_start = self._tracer.start(
+                    tts2_id, tts2_start = await self._tracer.start(
                         "tts.followup", "tts", parent_id=turn_id,
                         input={"text": body2, "voice": runtime.voice, "language": runtime.language},
                     )
                     try:
                         await self._speak(body2, runtime.voice, runtime.language)
-                        self._tracer.end(tts2_id, tts2_start, meta={"chars": len(body2)})
+                        await self._tracer.end(tts2_id, tts2_start, meta={"chars": len(body2)})
                     except Exception as te:
-                        self._tracer.end(tts2_id, tts2_start, error=str(te))
+                        await self._tracer.end(tts2_id, tts2_start, error=str(te))
                         raise
             except Exception as e:
-                self._tracer.end(llm2_id, llm2_start, error=str(e))
+                await self._tracer.end(llm2_id, llm2_start, error=str(e))
                 logger.warning("MCP tool followup failed: %s", e)
 
     async def _run_auto_calls(self, trigger: str) -> None:
@@ -1346,16 +1355,18 @@ class VoiceSession:
         결과는 self.state에 누적되어 다음 build_runtime에서 컨텍스트로 주입."""
         import os
         import re
-        tools = (
-            self.db.query(models.Tool)
-            .filter(models.Tool.bot_id == self.bot_id,
-                    models.Tool.is_enabled.is_(True),
-                    models.Tool.auto_call_on == trigger)
-            .all()
+        tools_stmt = (
+            select(models.Tool)
+            .where(
+                models.Tool.bot_id == self.bot_id,
+                models.Tool.is_enabled.is_(True),
+                models.Tool.auto_call_on == trigger,
+            )
         )
+        tools = list((await self.db.execute(tools_stmt)).scalars().all())
         if not tools:
             return
-        bot = self.db.get(models.Bot, self.bot_id)
+        bot = await self.db.get(models.Bot, self.bot_id)
         bot_env = (bot.env_vars if bot and bot.env_vars else {}) or {}
         for tool in tools:
             ref_text = (tool.code or "") + " " + str(tool.settings or {})
@@ -1367,11 +1378,11 @@ class VoiceSession:
             # VC 치환 — auto_call_on session_start 도구가 dynamic 변수 (예: reservationNo) 활용 가능
             args = _resolve_args_deep(args, self.state.var_ctx)
 
-            tid, ts = self._tracer.start(
+            tid, ts = await self._tracer.start(
                 f"auto_call: {tool.name}", "tool", input={"name": tool.name, "args": args, "trigger": trigger}
             )
             result = await execute_tool(tool, args, env)
-            self._tracer.end(
+            await self._tracer.end(
                 tid, ts,
                 output=str(result.result) if result.ok else None,
                 meta={"duration_ms": result.duration_ms, "ok": result.ok, "auto": True},
@@ -1438,10 +1449,10 @@ class VoiceSession:
             # cancel(barge-in)된 경우에도 잔향 가능성 있어 동일하게 기록.
             self.state.last_speak_end_t = _time.monotonic()
 
-    def _save_transcript(self, role: str, text: str) -> None:
+    async def _save_transcript(self, role: str, text: str) -> None:
         t = models.Transcript(session_id=self.session_id, role=role, text=text, is_final=True)
         self.db.add(t)
-        sess = self.db.get(models.CallSession, self.session_id)
+        sess = await self.db.get(models.CallSession, self.session_id)
         if sess and sess.status == "pending":
             sess.status = "active"
-        self.db.commit()
+        await self.db.commit()

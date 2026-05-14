@@ -107,7 +107,7 @@ def test_consume_falls_back_to_fresh_when_no_task():
     sess = _make_session()
     called = []
 
-    def fake_build(db, bot_id, active_skill, **kw):
+    async def fake_build(db, bot_id, active_skill, **kw):
         called.append((bot_id, active_skill))
         return ("fresh_runtime", "fresh_skill")
 
@@ -128,7 +128,7 @@ def test_consume_falls_back_on_prefetch_exception():
     sess = _make_session()
     called = []
 
-    def fake_build(db, bot_id, active_skill, **kw):
+    async def fake_build(db, bot_id, active_skill, **kw):
         called.append((bot_id, active_skill))
         return ("fresh_runtime", "fresh_skill")
 

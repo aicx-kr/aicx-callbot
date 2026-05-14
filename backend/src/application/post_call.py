@@ -15,6 +15,9 @@ import json
 import logging
 import re
 
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
 from ..domain.ports import LLMPort
 from ..infrastructure import models
 from ..infrastructure.db import SessionLocal
@@ -41,19 +44,23 @@ POST_CALL_PROMPT_FOOTER = "\n\n# 출력\nJSON 외 다른 문자는 절대 출력
 
 async def analyze_session(session_id: int, llm: LLMPort, model: str = "gemini-3.1-flash-lite") -> None:
     """세션 종료 후 호출. DB를 새로 열어 분석 결과 저장."""
-    db = SessionLocal()
-    try:
-        sess = db.get(models.CallSession, session_id)
+    async with SessionLocal() as db:
+        stmt = (
+            select(models.CallSession)
+            .where(models.CallSession.id == session_id)
+            .options(selectinload(models.CallSession.transcripts))
+        )
+        sess = (await db.execute(stmt)).scalar_one_or_none()
         if not sess:
             return
         if not sess.transcripts:
             sess.analysis_status = "failed"
             sess.summary = "트랜스크립트 없음"
-            db.commit()
+            await db.commit()
             return
 
         sess.analysis_status = "pending"
-        db.commit()
+        await db.commit()
 
         transcript = "\n".join(
             f"{t.role}: {t.text}" for t in sess.transcripts if t.is_final
@@ -78,9 +85,7 @@ async def analyze_session(session_id: int, llm: LLMPort, model: str = "gemini-3.
             logger.exception("post-call analysis failed: %s", e)
             sess.analysis_status = "failed"
             sess.summary = f"분석 실패: {e}"
-        db.commit()
-    finally:
-        db.close()
+        await db.commit()
 
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)

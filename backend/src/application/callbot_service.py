@@ -16,35 +16,35 @@ class CallbotAgentService:
     def __init__(self, repo: CallbotAgentRepository) -> None:
         self._repo = repo
 
-    def list(self, tenant_id: int | None = None) -> list[CallbotAgent]:
-        return self._repo.list(tenant_id=tenant_id)
+    async def list(self, tenant_id: int | None = None) -> list[CallbotAgent]:
+        return await self._repo.list(tenant_id=tenant_id)
 
-    def get(self, callbot_id: int) -> CallbotAgent | None:
-        return self._repo.get(callbot_id)
+    async def get(self, callbot_id: int) -> CallbotAgent | None:
+        return await self._repo.get(callbot_id)
 
-    def create(self, *, tenant_id: int, name: str, **kwargs) -> CallbotAgent:
+    async def create(self, *, tenant_id: int, name: str, **kwargs) -> CallbotAgent:
         agent = CallbotAgent(id=None, tenant_id=tenant_id, name=name, **kwargs)
-        return self._repo.save(agent)
+        return await self._repo.save(agent)
 
-    def update(self, callbot_id: int, **fields) -> CallbotAgent:
-        agent = self._repo.get(callbot_id)
+    async def update(self, callbot_id: int, **fields) -> CallbotAgent:
+        agent = await self._repo.get(callbot_id)
         if agent is None:
             raise DomainError(f"CallbotAgent {callbot_id} 없음")
         for k, v in fields.items():
             if hasattr(agent, k) and v is not None:
                 setattr(agent, k, v)
-        return self._repo.save(agent)
+        return await self._repo.save(agent)
 
-    def delete(self, callbot_id: int) -> None:
-        self._repo.delete(callbot_id)
+    async def delete(self, callbot_id: int) -> None:
+        await self._repo.delete(callbot_id)
 
     # ---------- 멤버 ----------
 
-    def add_member(
+    async def add_member(
         self, callbot_id: int, *, bot_id: int, role: str = "sub",
         order: int = 0, branch_trigger: str = "", voice_override: str = "",
     ) -> CallbotMembership:
-        agent = self._repo.get(callbot_id)
+        agent = await self._repo.get(callbot_id)
         if agent is None:
             raise DomainError(f"CallbotAgent {callbot_id} 없음")
         member = CallbotMembership(
@@ -52,16 +52,16 @@ class CallbotAgentService:
             order=order, branch_trigger=branch_trigger, voice_override=voice_override,
         )
         agent.add_member(member)  # invariant 강제: 중복 X, main 1개 X
-        saved = self._repo.save(agent)
+        saved = await self._repo.save(agent)
         # 방금 추가된 멤버 (id가 최신)
         return next(m for m in saved.memberships if m.bot_id == bot_id)
 
-    def update_member(
+    async def update_member(
         self, callbot_id: int, member_id: int, *,
         role: str | None = None, order: int | None = None,
         branch_trigger: str | None = None, voice_override: str | None = None,
     ) -> CallbotMembership:
-        agent = self._repo.get(callbot_id)
+        agent = await self._repo.get(callbot_id)
         if agent is None:
             raise DomainError(f"CallbotAgent {callbot_id} 없음")
         if role is not None:
@@ -78,12 +78,12 @@ class CallbotAgentService:
                 break
         else:
             raise DomainError(f"membership {member_id} 없음")
-        saved = self._repo.save(agent)
+        saved = await self._repo.save(agent)
         return next(m for m in saved.memberships if m.id == member_id)
 
-    def remove_member(self, callbot_id: int, member_id: int) -> None:
-        agent = self._repo.get(callbot_id)
+    async def remove_member(self, callbot_id: int, member_id: int) -> None:
+        agent = await self._repo.get(callbot_id)
         if agent is None:
             raise DomainError(f"CallbotAgent {callbot_id} 없음")
         agent.remove_member(member_id)
-        self._repo.save(agent)
+        await self._repo.save(agent)

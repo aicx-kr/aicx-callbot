@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     # 기본 8765 — frontend/next.config.js의 API_TARGET 기본값과 일치.
     # 다른 포트로 띄울 땐 PORT 환경변수로 override + frontend BACKEND_URL도 함께 맞춰야 함.
     port: int = 8765
-    database_url: str = "sqlite:///./callbot.db"
+    # Async URL — postgresql+asyncpg://... 또는 sqlite+aiosqlite:///./callbot.db
+    database_url: str = "sqlite+aiosqlite:///./callbot.db"
 
     # Provider selection (google | mock)
     provider_stt: str = "google"

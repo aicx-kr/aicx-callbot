@@ -1,8 +1,9 @@
-"""MCPServer repository — SQLAlchemy 구현."""
+"""MCPServer repository — SQLAlchemy async 구현."""
 
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...domain.mcp_server import MCPServer
 from ...domain.repositories import MCPServerRepository
@@ -37,39 +38,39 @@ def _apply_to_row(row: models.MCPServer, s: MCPServer) -> None:
 
 
 class SqlAlchemyMCPServerRepository(MCPServerRepository):
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    def get(self, server_id: int) -> MCPServer | None:
-        row = self._db.get(models.MCPServer, server_id)
+    async def get(self, server_id: int) -> MCPServer | None:
+        row = await self._db.get(models.MCPServer, server_id)
         return _to_domain(row) if row else None
 
-    def list_by_bot(self, bot_id: int) -> list[MCPServer]:
-        rows = (
-            self._db.query(models.MCPServer)
-            .filter(models.MCPServer.bot_id == bot_id)
+    async def list_by_bot(self, bot_id: int) -> list[MCPServer]:
+        stmt = (
+            select(models.MCPServer)
+            .where(models.MCPServer.bot_id == bot_id)
             .order_by(models.MCPServer.id)
-            .all()
         )
+        rows = (await self._db.execute(stmt)).scalars().all()
         return [_to_domain(r) for r in rows]
 
-    def save(self, s: MCPServer) -> MCPServer:
+    async def save(self, s: MCPServer) -> MCPServer:
         s.validate()
         if s.id is None:
             row = models.MCPServer()
             _apply_to_row(row, s)
             self._db.add(row)
         else:
-            row = self._db.get(models.MCPServer, s.id)
+            row = await self._db.get(models.MCPServer, s.id)
             if row is None:
                 raise ValueError(f"MCPServer {s.id} not found")
             _apply_to_row(row, s)
-        self._db.commit()
-        self._db.refresh(row)
+        await self._db.commit()
+        await self._db.refresh(row)
         return _to_domain(row)
 
-    def delete(self, server_id: int) -> None:
-        row = self._db.get(models.MCPServer, server_id)
+    async def delete(self, server_id: int) -> None:
+        row = await self._db.get(models.MCPServer, server_id)
         if row:
-            self._db.delete(row)
-            self._db.commit()
+            await self._db.delete(row)
+            await self._db.commit()

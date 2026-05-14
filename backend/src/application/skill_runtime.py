@@ -1,6 +1,7 @@
 """Skill 런타임 — Bot/Skill/Knowledge → 런타임 시스템 프롬프트 합성.
 
 LLM 응답 마지막 줄의 JSON 신호({"next_skill":"..."} | {"tool":"..."})를 파싱한다.
+async 변환: 관련 관계는 selectinload 로 미리 로드.
 """
 
 from __future__ import annotations
@@ -9,7 +10,9 @@ import json
 import re
 from dataclasses import dataclass
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..domain.entities import BotRuntime
 from ..domain.prompts import build_system_prompt
@@ -25,8 +28,18 @@ class LLMSignal:
     extracted: dict | None = None  # 사용자 발화에서 추출된 슬롯 (예: {"reservationNo": "ACM-..."})
 
 
-def find_bot(db: Session, bot_id: int) -> models.Bot | None:
-    return db.get(models.Bot, bot_id)
+async def find_bot(db: AsyncSession, bot_id: int) -> models.Bot | None:
+    """관계 collection 까지 eager 로드된 Bot 반환."""
+    stmt = (
+        select(models.Bot)
+        .where(models.Bot.id == bot_id)
+        .options(
+            selectinload(models.Bot.skills),
+            selectinload(models.Bot.knowledge),
+            selectinload(models.Bot.tools),
+        )
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
 
 
 def find_frontdoor(bot: models.Bot) -> models.Skill | None:
@@ -43,17 +56,20 @@ def find_skill_by_name(bot: models.Bot, name: str) -> models.Skill | None:
     return None
 
 
-def _resolve_callbot_settings(db: Session, bot: models.Bot) -> tuple[str, str, str, str, dict, dict]:
+async def _resolve_callbot_settings(
+    db: AsyncSession, bot: models.Bot
+) -> tuple[str, str, str, str, dict, dict]:
     """봇이 속한 CallbotAgent의 통화 일관 설정을 우선 반환.
     sub 멤버라면 voice_override를 우선. CallbotAgent 없으면 Bot 자체값 fallback.
 
     Returns: (voice, greeting, language, llm_model, pronunciation_dict, dtmf_map)
     """
-    membership = (
-        db.query(models.CallbotMembership)
-        .filter(models.CallbotMembership.bot_id == bot.id)
-        .first()
+    stmt = (
+        select(models.CallbotMembership)
+        .where(models.CallbotMembership.bot_id == bot.id)
+        .options(selectinload(models.CallbotMembership.callbot))
     )
+    membership = (await db.execute(stmt)).scalar_one_or_none()
     if membership is None:
         return (
             bot.voice or "",
@@ -75,8 +91,8 @@ def _resolve_callbot_settings(db: Session, bot: models.Bot) -> tuple[str, str, s
     )
 
 
-def build_runtime(
-    db: Session, bot_id: int, active_skill_name: str | None = None,
+async def build_runtime(
+    db: AsyncSession, bot_id: int, active_skill_name: str | None = None,
     auto_context: dict | None = None,
     variables: dict | None = None,
 ) -> tuple[BotRuntime, str | None]:
@@ -84,7 +100,7 @@ def build_runtime(
 
     Returns: (런타임, 선택된 스킬 이름)
     """
-    bot = find_bot(db, bot_id)
+    bot = await find_bot(db, bot_id)
     if bot is None:
         raise ValueError(f"Bot {bot_id} not found")
 
@@ -116,11 +132,11 @@ def build_runtime(
     ]
     # MCP 서버에서 발견된 도구도 함께 노출 (동일 이름이면 DB 도구 우선)
     existing_names = {t["name"] for t in tools}
-    mcp_servers = (
-        db.query(models.MCPServer)
-        .filter(models.MCPServer.bot_id == bot_id, models.MCPServer.is_enabled.is_(True))
-        .all()
+    mcp_stmt = (
+        select(models.MCPServer)
+        .where(models.MCPServer.bot_id == bot_id, models.MCPServer.is_enabled.is_(True))
     )
+    mcp_servers = (await db.execute(mcp_stmt)).scalars().all()
     for srv in mcp_servers:
         for mt in srv.discovered_tools or []:
             name = mt.get("name")
@@ -153,9 +169,11 @@ def build_runtime(
 
     branches = bot.branches or []
     # 분기 표시용: 같은 테넌트의 봇 id→name lookup
-    bot_lookup = {b.id: b.name for b in db.query(models.Bot).filter(models.Bot.tenant_id == bot.tenant_id).all()}
+    bots_in_tenant_stmt = select(models.Bot).where(models.Bot.tenant_id == bot.tenant_id)
+    bots_in_tenant = (await db.execute(bots_in_tenant_stmt)).scalars().all()
+    bot_lookup = {b.id: b.name for b in bots_in_tenant}
     # CallbotAgent 통화 일관 설정 우선 (없으면 bot 자체 값 fallback)
-    voice, greeting, language, llm_model, _pron, _dtmf = _resolve_callbot_settings(db, bot)
+    voice, greeting, language, llm_model, _pron, _dtmf = await _resolve_callbot_settings(db, bot)
     system_prompt = build_system_prompt(
         persona=bot.persona or "",
         bot_system_prompt=bot.system_prompt or "",

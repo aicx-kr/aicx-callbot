@@ -1,15 +1,11 @@
-"""스모크 테스트 — 앱 부팅 + 시드 + 라우터 동작 확인."""
+"""스모크 테스트 — 앱 부팅 + 시드 + 라우터 동작 확인.
 
-import os
-import tempfile
+DATABASE_URL 은 tests/conftest.py 에서 임시 SQLite 로 설정된다.
+"""
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmp.name}"
+from fastapi.testclient import TestClient
 
-from fastapi.testclient import TestClient  # noqa: E402
-
-from src.app import create_app  # noqa: E402
+from src.app import create_app
 
 
 def test_health():

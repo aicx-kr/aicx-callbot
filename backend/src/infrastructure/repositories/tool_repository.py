@@ -1,8 +1,9 @@
-"""Tool repository — SQLAlchemy 구현."""
+"""Tool repository — SQLAlchemy async 구현."""
 
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...domain.repositories import ToolRepository
 from ...domain.tool import AutoCallOn, Tool, ToolType
@@ -37,39 +38,39 @@ def _apply_to_row(row: models.Tool, tool: Tool) -> None:
 
 
 class SqlAlchemyToolRepository(ToolRepository):
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    def get(self, tool_id: int) -> Tool | None:
-        row = self._db.get(models.Tool, tool_id)
+    async def get(self, tool_id: int) -> Tool | None:
+        row = await self._db.get(models.Tool, tool_id)
         return _to_domain(row) if row else None
 
-    def list_by_bot(self, bot_id: int) -> list[Tool]:
-        rows = (
-            self._db.query(models.Tool)
-            .filter(models.Tool.bot_id == bot_id)
+    async def list_by_bot(self, bot_id: int) -> list[Tool]:
+        stmt = (
+            select(models.Tool)
+            .where(models.Tool.bot_id == bot_id)
             .order_by(models.Tool.id)
-            .all()
         )
+        rows = (await self._db.execute(stmt)).scalars().all()
         return [_to_domain(r) for r in rows]
 
-    def save(self, tool: Tool) -> Tool:
+    async def save(self, tool: Tool) -> Tool:
         tool.validate()
         if tool.id is None:
             row = models.Tool()
             _apply_to_row(row, tool)
             self._db.add(row)
         else:
-            row = self._db.get(models.Tool, tool.id)
+            row = await self._db.get(models.Tool, tool.id)
             if row is None:
                 raise ValueError(f"Tool {tool.id} not found")
             _apply_to_row(row, tool)
-        self._db.commit()
-        self._db.refresh(row)
+        await self._db.commit()
+        await self._db.refresh(row)
         return _to_domain(row)
 
-    def delete(self, tool_id: int) -> None:
-        row = self._db.get(models.Tool, tool_id)
+    async def delete(self, tool_id: int) -> None:
+        row = await self._db.get(models.Tool, tool_id)
         if row:
-            self._db.delete(row)
-            self._db.commit()
+            await self._db.delete(row)
+            await self._db.commit()

@@ -83,8 +83,12 @@ def _make_session_with_bot(bot_tools: list, missing_bot: bool = False) -> VoiceS
     sess.state = _SessionState()
     fake_bot = MagicMock()
     fake_bot.tools = bot_tools
+    fake_bot.skills = []
     sess.db = MagicMock()
-    sess.db.get.return_value = None if missing_bot else fake_bot
+    # _build_tool_specs 가 async find_bot 을 통해 봇을 가져옴 → vs_module.find_bot 을 monkey-patch.
+    async def fake_find_bot(db, bot_id):
+        return None if missing_bot else fake_bot
+    sess._fake_find_bot = fake_find_bot
     return sess
 
 
@@ -99,7 +103,12 @@ def _fake_tool(name: str, params: list, enabled: bool = True, description: str =
 
 def test_build_tool_specs_includes_builtins_when_no_bot():
     sess = _make_session_with_bot([], missing_bot=True)
-    specs = sess._build_tool_specs()
+    original = vs_module.find_bot
+    vs_module.find_bot = sess._fake_find_bot
+    try:
+        specs = asyncio.run(sess._build_tool_specs())
+    finally:
+        vs_module.find_bot = original
     names = {s.name for s in specs}
     assert _BUILTIN_TOOL_NAMES.issubset(names)
 
@@ -109,7 +118,12 @@ def test_build_tool_specs_includes_db_tools():
         _fake_tool("get_weather", [{"name": "city", "type": "string", "required": True}]),
         _fake_tool("disabled_tool", [], enabled=False),
     ])
-    specs = sess._build_tool_specs()
+    original = vs_module.find_bot
+    vs_module.find_bot = sess._fake_find_bot
+    try:
+        specs = asyncio.run(sess._build_tool_specs())
+    finally:
+        vs_module.find_bot = original
     names = {s.name for s in specs}
     assert "get_weather" in names
     assert "disabled_tool" not in names
@@ -125,7 +139,12 @@ def test_build_tool_specs_db_overrides_builtin():
     sess = _make_session_with_bot([
         _fake_tool("end_call", [{"name": "reason", "type": "string"}], description="DB 버전"),
     ])
-    specs = sess._build_tool_specs()
+    original = vs_module.find_bot
+    vs_module.find_bot = sess._fake_find_bot
+    try:
+        specs = asyncio.run(sess._build_tool_specs())
+    finally:
+        vs_module.find_bot = original
     end_call_specs = [s for s in specs if s.name == "end_call"]
     assert len(end_call_specs) == 1
     assert end_call_specs[0].description == "DB 버전"

@@ -1,8 +1,9 @@
-"""Bot repository — SQLAlchemy 구현. ORM↔domain 매핑."""
+"""Bot repository — SQLAlchemy async 구현. ORM↔domain 매핑."""
 
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...domain.bot import AgentType, Bot
 from ...domain.repositories import BotRepository
@@ -51,36 +52,38 @@ def _apply_to_row(row: models.Bot, bot: Bot) -> None:
 
 
 class SqlAlchemyBotRepository(BotRepository):
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    def get(self, bot_id: int) -> Bot | None:
-        row = self._db.get(models.Bot, bot_id)
+    async def get(self, bot_id: int) -> Bot | None:
+        row = await self._db.get(models.Bot, bot_id)
         return _to_domain(row) if row else None
 
-    def list(self, tenant_id: int | None = None) -> list[Bot]:
-        q = self._db.query(models.Bot)
+    async def list(self, tenant_id: int | None = None) -> list[Bot]:
+        stmt = select(models.Bot)
         if tenant_id is not None:
-            q = q.filter(models.Bot.tenant_id == tenant_id)
-        return [_to_domain(r) for r in q.order_by(models.Bot.id).all()]
+            stmt = stmt.where(models.Bot.tenant_id == tenant_id)
+        stmt = stmt.order_by(models.Bot.id)
+        rows = (await self._db.execute(stmt)).scalars().all()
+        return [_to_domain(r) for r in rows]
 
-    def save(self, bot: Bot) -> Bot:
+    async def save(self, bot: Bot) -> Bot:
         bot.validate()
         if bot.id is None:
             row = models.Bot()
             _apply_to_row(row, bot)
             self._db.add(row)
         else:
-            row = self._db.get(models.Bot, bot.id)
+            row = await self._db.get(models.Bot, bot.id)
             if row is None:
                 raise ValueError(f"Bot {bot.id} not found")
             _apply_to_row(row, bot)
-        self._db.commit()
-        self._db.refresh(row)
+        await self._db.commit()
+        await self._db.refresh(row)
         return _to_domain(row)
 
-    def delete(self, bot_id: int) -> None:
-        row = self._db.get(models.Bot, bot_id)
+    async def delete(self, bot_id: int) -> None:
+        row = await self._db.get(models.Bot, bot_id)
         if row:
-            self._db.delete(row)
-            self._db.commit()
+            await self._db.delete(row)
+            await self._db.commit()

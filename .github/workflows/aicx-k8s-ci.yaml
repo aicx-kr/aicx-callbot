@@ -1,0 +1,92 @@
+name: K8S Deploy - AICX Callbot CI/CD
+run-name: Deploy to ${{ inputs.environment }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        description: '배포 환경 선택'
+        default: dev
+        type: choice
+        options:
+          - dev
+          - prod
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: ${{ secrets.ECR_REGISTRY }}/${{ inputs.environment }}-aicx-callbot
+  APP_NAME: aicx-callbot/server
+
+jobs:
+  generate-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.generate_tag.outputs.tag }}
+    steps:
+      - name: Generate deployment metadata
+        id: generate_tag
+        run: |
+          TAG=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Tag: $TAG"
+
+  build-and-deploy:
+    needs: [generate-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: AWS Login
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.ECR_ROLE }}
+
+      - name: ECR Login
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Docker build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.ECR_REPOSITORY }}:${{ needs.generate-tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update manifest repository
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.MANIFEST_REPO_PAT }}
+          repository: aicx-kr/aicx-k8s-manifests
+          event-type: update-image-tag
+          client-payload: |
+            {
+              "env": "${{ inputs.environment }}",
+              "app_name": "${{ env.APP_NAME }}",
+              "new_tag": "${{ needs.generate-tag.outputs.tag }}"
+            }
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "Deployment successful!"
+          echo "Tag: ${{ needs.generate-tag.outputs.tag }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Image: ${{ env.ECR_REPOSITORY }}:${{ needs.generate-tag.outputs.tag }}"
+          echo "Manifest: ${{ env.APP_NAME }}"

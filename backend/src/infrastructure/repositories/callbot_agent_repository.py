@@ -1,11 +1,13 @@
-"""CallbotAgent repository — SQLAlchemy 구현.
+"""CallbotAgent repository — SQLAlchemy async 구현.
 
 domain.CallbotAgent ↔ models.CallbotAgent 매핑. 영속화만 담당, 비즈니스 규칙 X.
 """
 
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ...domain.callbot import CallbotAgent, CallbotMembership, MembershipRole
 from ...domain.repositories import CallbotAgentRepository
@@ -38,20 +40,33 @@ def _to_domain(row: models.CallbotAgent) -> CallbotAgent:
 
 
 class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    def get(self, callbot_id: int) -> CallbotAgent | None:
-        row = self._db.get(models.CallbotAgent, callbot_id)
+    async def _get_with_members(self, callbot_id: int) -> models.CallbotAgent | None:
+        # AsyncSession 에서는 lazy load 가 불가 — memberships 를 eager 로드.
+        stmt = (
+            select(models.CallbotAgent)
+            .where(models.CallbotAgent.id == callbot_id)
+            .options(selectinload(models.CallbotAgent.memberships))
+        )
+        return (await self._db.execute(stmt)).scalar_one_or_none()
+
+    async def get(self, callbot_id: int) -> CallbotAgent | None:
+        row = await self._get_with_members(callbot_id)
         return _to_domain(row) if row else None
 
-    def list(self, tenant_id: int | None = None) -> list[CallbotAgent]:
-        q = self._db.query(models.CallbotAgent)
+    async def list(self, tenant_id: int | None = None) -> list[CallbotAgent]:
+        stmt = select(models.CallbotAgent).options(
+            selectinload(models.CallbotAgent.memberships)
+        )
         if tenant_id is not None:
-            q = q.filter(models.CallbotAgent.tenant_id == tenant_id)
-        return [_to_domain(r) for r in q.order_by(models.CallbotAgent.id).all()]
+            stmt = stmt.where(models.CallbotAgent.tenant_id == tenant_id)
+        stmt = stmt.order_by(models.CallbotAgent.id)
+        rows = (await self._db.execute(stmt)).scalars().all()
+        return [_to_domain(r) for r in rows]
 
-    def save(self, agent: CallbotAgent) -> CallbotAgent:
+    async def save(self, agent: CallbotAgent) -> CallbotAgent:
         if agent.id is None:
             row = models.CallbotAgent(
                 tenant_id=agent.tenant_id, name=agent.name,
@@ -61,9 +76,9 @@ class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
                 dtmf_map=agent.dtmf_map,
             )
             self._db.add(row)
-            self._db.flush()
+            await self._db.flush()
         else:
-            row = self._db.get(models.CallbotAgent, agent.id)
+            row = await self._get_with_members(agent.id)
             if row is None:
                 raise ValueError(f"CallbotAgent {agent.id} not found in DB")
             row.name = agent.name
@@ -81,7 +96,7 @@ class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
         # 제거된 멤버
         for old_id, old_row in list(existing_by_id.items()):
             if old_id not in domain_ids:
-                self._db.delete(old_row)
+                await self._db.delete(old_row)
 
         # 추가/업데이트
         for dm in agent.memberships:
@@ -101,22 +116,28 @@ class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
                     voice_override=dm.voice_override,
                 ))
 
-        self._db.commit()
-        self._db.refresh(row)
-        return _to_domain(row)
+        await self._db.commit()
+        # refresh + 멤버 다시 로드
+        refreshed = await self._get_with_members(row.id)
+        return _to_domain(refreshed)
 
-    def delete(self, callbot_id: int) -> None:
-        row = self._db.get(models.CallbotAgent, callbot_id)
+    async def delete(self, callbot_id: int) -> None:
+        row = await self._db.get(models.CallbotAgent, callbot_id)
         if row:
-            self._db.delete(row)
-            self._db.commit()
+            await self._db.delete(row)
+            await self._db.commit()
 
-    def find_by_bot_id(self, bot_id: int) -> CallbotAgent | None:
-        m = (
-            self._db.query(models.CallbotMembership)
-            .filter(models.CallbotMembership.bot_id == bot_id)
-            .first()
+    async def find_by_bot_id(self, bot_id: int) -> CallbotAgent | None:
+        stmt = (
+            select(models.CallbotMembership)
+            .where(models.CallbotMembership.bot_id == bot_id)
+            .options(
+                selectinload(models.CallbotMembership.callbot).selectinload(
+                    models.CallbotAgent.memberships
+                )
+            )
         )
+        m = (await self._db.execute(stmt)).scalar_one_or_none()
         if m is None:
             return None
         return _to_domain(m.callbot)

@@ -1,13 +1,17 @@
-"""Alembic 마이그레이션 환경.
+"""Alembic 마이그레이션 환경 (async).
 
 DATABASE_URL 은 settings 에서 동적으로 주입한다.
-sqlite (로컬) 와 postgresql 둘 다 지원.
+sqlite+aiosqlite (로컬) 와 postgresql+asyncpg (운영) 둘 다 지원.
 """
 
+import asyncio
 from logging.config import fileConfig
 
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
+
 from alembic import context
-from sqlalchemy import engine_from_config, pool
 
 # 콜봇 모델/Base 임포트 — autogenerate 가 이 metadata 와 DB 를 비교.
 from src.core.config import settings
@@ -39,18 +43,28 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
-    """온라인 (실제 DB 연결) 모드."""
-    connectable = engine_from_config(
+def do_run_migrations(connection: Connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_async_migrations() -> None:
+    """온라인 (실제 DB 연결) 모드 — async engine."""
+    connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
-        with context.begin_transaction():
-            context.run_migrations()
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

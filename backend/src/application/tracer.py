@@ -1,25 +1,25 @@
 """TraceRecorder — VoiceSession 내부에서 turn/LLM/tool span을 DB에 기록.
 
-프론트엔드 waterfall 뷰가 사용.
+프론트엔드 waterfall 뷰가 사용. async DB 세션 기반.
 """
 
 from __future__ import annotations
 
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..infrastructure import models
 
 
 class TraceRecorder:
-    def __init__(self, db: Session, session_id: int):
+    def __init__(self, db: AsyncSession, session_id: int):
         self.db = db
         self.session_id = session_id
         self._stack: list[int] = []
 
-    def start(
+    async def start(
         self, name: str, kind: str = "span", parent_id: int | None = None, input: dict | None = None
     ) -> tuple[int, float]:
         if parent_id is None and self._stack:
@@ -36,12 +36,12 @@ class TraceRecorder:
             meta_json={},
         )
         self.db.add(t)
-        self.db.commit()
-        self.db.refresh(t)
+        await self.db.commit()
+        await self.db.refresh(t)
         self._stack.append(t.id)
         return t.id, time.monotonic()
 
-    def end(
+    async def end(
         self,
         trace_id: int,
         mono_start: float,
@@ -49,7 +49,7 @@ class TraceRecorder:
         meta: dict | None = None,
         error: str | None = None,
     ) -> None:
-        t = self.db.get(models.Trace, trace_id)
+        t = await self.db.get(models.Trace, trace_id)
         if t is None:
             return
         t.duration_ms = int((time.monotonic() - mono_start) * 1000)
@@ -59,14 +59,14 @@ class TraceRecorder:
             t.meta_json = meta
         if error is not None:
             t.error_text = str(error)[:2000]
-        self.db.commit()
+        await self.db.commit()
         if self._stack and self._stack[-1] == trace_id:
             self._stack.pop()
 
-    @contextmanager
-    def span(self, name: str, kind: str = "span", input: dict | None = None):
-        tid, ts = self.start(name, kind, input=input)
+    @asynccontextmanager
+    async def span(self, name: str, kind: str = "span", input: dict | None = None):
+        tid, ts = await self.start(name, kind, input=input)
         try:
             yield tid
         finally:
-            self.end(tid, ts)
+            await self.end(tid, ts)

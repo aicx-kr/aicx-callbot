@@ -1,17 +1,19 @@
 """시드 데이터 — 마이리얼트립 데모 봇."""
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import models
 
 
-def seed_if_empty(db: Session) -> None:
-    if db.query(models.Tenant).count() > 0:
+async def seed_if_empty(db: AsyncSession) -> None:
+    count = (await db.execute(select(func.count()).select_from(models.Tenant))).scalar_one()
+    if count > 0:
         return
 
     tenant = models.Tenant(name="마이리얼트립", slug="myrealtrip")
     db.add(tenant)
-    db.flush()
+    await db.flush()
 
     bot = models.Bot(
         tenant_id=tenant.id,
@@ -30,7 +32,7 @@ def seed_if_empty(db: Session) -> None:
         llm_model="gemini-3.1-flash-lite",
     )
     db.add(bot)
-    db.flush()
+    await db.flush()
 
     db.add_all(
         [
@@ -312,4 +314,4 @@ def seed_if_empty(db: Session) -> None:
         ]
     )
 
-    db.commit()
+    await db.commit()

@@ -10,24 +10,24 @@ class MCPServerService:
     def __init__(self, repo: MCPServerRepository) -> None:
         self._repo = repo
 
-    def list_by_bot(self, bot_id: int) -> list[MCPServer]:
-        return self._repo.list_by_bot(bot_id)
+    async def list_by_bot(self, bot_id: int) -> list[MCPServer]:
+        return await self._repo.list_by_bot(bot_id)
 
-    def get(self, server_id: int) -> MCPServer | None:
-        return self._repo.get(server_id)
+    async def get(self, server_id: int) -> MCPServer | None:
+        return await self._repo.get(server_id)
 
-    def create(self, *, bot_id: int, name: str, base_url: str, **kwargs) -> MCPServer:
+    async def create(self, *, bot_id: int, name: str, base_url: str, **kwargs) -> MCPServer:
         s = MCPServer(id=None, bot_id=bot_id, name=name, base_url=base_url, **kwargs)
-        return self._repo.save(s)
+        return await self._repo.save(s)
 
-    def update(self, server_id: int, **fields) -> MCPServer:
-        s = self._repo.get(server_id)
+    async def update(self, server_id: int, **fields) -> MCPServer:
+        s = await self._repo.get(server_id)
         if s is None:
             raise DomainError(f"MCPServer {server_id} 없음")
         for k, v in fields.items():
             if hasattr(s, k) and v is not None:
                 setattr(s, k, v)
-        return self._repo.save(s)
+        return await self._repo.save(s)
 
-    def delete(self, server_id: int) -> None:
-        self._repo.delete(server_id)
+    async def delete(self, server_id: int) -> None:
+        await self._repo.delete(server_id)

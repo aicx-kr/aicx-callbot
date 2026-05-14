@@ -1,7 +1,8 @@
 import datetime as _dt
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...application.bot_service import BotService
 from ...application.skill_runtime import build_runtime
@@ -14,7 +15,7 @@ from .. import schemas
 router = APIRouter(prefix="/api/bots", tags=["bots"])
 
 
-def get_bot_service(db: Session = Depends(get_db)) -> BotService:
+def get_bot_service(db: AsyncSession = Depends(get_db)) -> BotService:
     return BotService(SqlAlchemyBotRepository(db))
 
 
@@ -42,33 +43,33 @@ def _to_out(bot: DomainBot) -> dict:
 
 
 @router.get("", response_model=list[schemas.BotOut])
-def list_bots(tenant_id: int | None = None, svc: BotService = Depends(get_bot_service)):
-    return [_to_out(b) for b in svc.list(tenant_id=tenant_id)]
+async def list_bots(tenant_id: int | None = None, svc: BotService = Depends(get_bot_service)):
+    return [_to_out(b) for b in await svc.list(tenant_id=tenant_id)]
 
 
 @router.post("", response_model=schemas.BotOut, status_code=status.HTTP_201_CREATED)
-def create_bot(payload: schemas.BotCreate, svc: BotService = Depends(get_bot_service), db: Session = Depends(get_db)):
-    if not db.get(models.Tenant, payload.tenant_id):
+async def create_bot(payload: schemas.BotCreate, svc: BotService = Depends(get_bot_service), db: AsyncSession = Depends(get_db)):
+    if not await db.get(models.Tenant, payload.tenant_id):
         raise HTTPException(400, "tenant not found")
     try:
-        bot = svc.create(**payload.model_dump())
+        bot = await svc.create(**payload.model_dump())
     except DomainError as e:
         raise HTTPException(400, str(e))
     return _to_out(bot)
 
 
 @router.get("/{bot_id}", response_model=schemas.BotOut)
-def get_bot(bot_id: int, svc: BotService = Depends(get_bot_service)):
-    b = svc.get(bot_id)
+async def get_bot(bot_id: int, svc: BotService = Depends(get_bot_service)):
+    b = await svc.get(bot_id)
     if not b:
         raise HTTPException(404)
     return _to_out(b)
 
 
 @router.patch("/{bot_id}", response_model=schemas.BotOut)
-def update_bot(bot_id: int, payload: schemas.BotUpdate, svc: BotService = Depends(get_bot_service)):
+async def update_bot(bot_id: int, payload: schemas.BotUpdate, svc: BotService = Depends(get_bot_service)):
     try:
-        b = svc.update(bot_id, **payload.model_dump(exclude_unset=True))
+        b = await svc.update(bot_id, **payload.model_dump(exclude_unset=True))
     except DomainError as e:
         msg = str(e)
         raise HTTPException(404 if "없음" in msg else 400, msg)
@@ -76,15 +77,15 @@ def update_bot(bot_id: int, payload: schemas.BotUpdate, svc: BotService = Depend
 
 
 @router.delete("/{bot_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_bot(bot_id: int, svc: BotService = Depends(get_bot_service)):
-    svc.delete(bot_id)
+async def delete_bot(bot_id: int, svc: BotService = Depends(get_bot_service)):
+    await svc.delete(bot_id)
 
 
 @router.get("/{bot_id}/runtime")
-def get_bot_runtime(bot_id: int, db: Session = Depends(get_db)):
+async def get_bot_runtime(bot_id: int, db: AsyncSession = Depends(get_db)):
     """런타임 합성 프롬프트 미리보기 (디버깅용)."""
     try:
-        runtime, active = build_runtime(db, bot_id, None)
+        runtime, active = await build_runtime(db, bot_id, None)
     except ValueError:
         raise HTTPException(404)
     return {
@@ -100,7 +101,7 @@ def get_bot_runtime(bot_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{bot_id}/test-voice")
-async def test_voice(bot_id: int, db: Session = Depends(get_db)):
+async def test_voice(bot_id: int, db: AsyncSession = Depends(get_db)):
     """봇의 현재 voice/language로 짧은 샘플 음성 합성 — 콘솔 미리듣기용.
 
     돌려주는 WAV 16k LINEAR16 raw bytes를 audio/wav 헤더 붙여 반환.
@@ -113,7 +114,7 @@ async def test_voice(bot_id: int, db: Session = Depends(get_db)):
 
     from ...infrastructure.adapters.factory import get_tts, is_voice_mode_available
 
-    b = db.get(models.Bot, bot_id)
+    b = await db.get(models.Bot, bot_id)
     if not b:
         raise HTTPException(404)
     if not is_voice_mode_available():
@@ -121,7 +122,7 @@ async def test_voice(bot_id: int, db: Session = Depends(get_db)):
 
     # CallbotAgent 통화 일관 설정 우선 — sub.voice_override 있으면 그것
     from ...application.skill_runtime import _resolve_callbot_settings
-    voice, _greet, language, _llm, _pron, _dtmf = _resolve_callbot_settings(db, b)
+    voice, _greet, language, _llm, _pron, _dtmf = await _resolve_callbot_settings(db, b)
 
     tts = get_tts()
     sample = f"안녕하세요, {b.name} 입니다. 보이스 테스트 중입니다."
@@ -157,9 +158,9 @@ async def test_voice(bot_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{bot_id}/env")
-def get_env(bot_id: int, reveal: bool = False, db: Session = Depends(get_db)):
+async def get_env(bot_id: int, reveal: bool = False, db: AsyncSession = Depends(get_db)):
     """환경변수 조회. reveal=true면 값 포함, 기본은 키 목록만."""
-    b = db.get(models.Bot, bot_id)
+    b = await db.get(models.Bot, bot_id)
     if not b:
         raise HTTPException(404)
     env = b.env_vars or {}
@@ -169,21 +170,22 @@ def get_env(bot_id: int, reveal: bool = False, db: Session = Depends(get_db)):
 
 
 @router.put("/{bot_id}/env")
-def update_env(bot_id: int, payload: schemas.EnvVarsUpdate, db: Session = Depends(get_db)):
+async def update_env(bot_id: int, payload: schemas.EnvVarsUpdate, db: AsyncSession = Depends(get_db)):
     """환경변수 전체 dict 갱신. 빈 값/공백 키는 제거."""
-    b = db.get(models.Bot, bot_id)
+    b = await db.get(models.Bot, bot_id)
     if not b:
         raise HTTPException(404)
     cleaned = {k.strip(): v for k, v in (payload.env_vars or {}).items() if k and k.strip()}
     b.env_vars = cleaned
-    db.commit()
+    await db.commit()
     return {"updated": True, "count": len(cleaned)}
 
 
 @router.get("/{bot_id}/mentions")
-def list_mentions(bot_id: int, db: Session = Depends(get_db)):
+async def list_mentions(bot_id: int, db: AsyncSession = Depends(get_db)):
     """`@` 자동완성용 — 봇이 가진 모든 스킬/지식/도구 이름 + 설명."""
-    b = db.get(models.Bot, bot_id)
+    from ...application.skill_runtime import find_bot
+    b = await find_bot(db, bot_id)
     if not b:
         raise HTTPException(404)
     items: list[dict] = []
@@ -195,9 +197,12 @@ def list_mentions(bot_id: int, db: Session = Depends(get_db)):
         if t.is_enabled:
             items.append({"kind": "tool", "name": t.name, "description": t.description or ""})
     # MCP 서버 도구도 mention 후보에 포함
-    mcp_srvs = db.query(models.MCPServer).filter(
-        models.MCPServer.bot_id == bot_id, models.MCPServer.is_enabled.is_(True)
-    ).all()
+    mcp_stmt = (
+        select(models.MCPServer).where(
+            models.MCPServer.bot_id == bot_id, models.MCPServer.is_enabled.is_(True)
+        )
+    )
+    mcp_srvs = (await db.execute(mcp_stmt)).scalars().all()
     existing = {(i["kind"], i["name"]) for i in items}
     for srv in mcp_srvs:
         for mt in srv.discovered_tools or []:

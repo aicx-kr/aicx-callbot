@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -34,21 +33,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@asynccontextmanager
-async def _db_scope():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 @router.websocket("/ws/calls/{session_id}")
 async def voice_ws(websocket: WebSocket, session_id: int):
     await websocket.accept()
 
-    async with _db_scope() as db:
-        sess = db.get(models.CallSession, session_id)
+    # async sessionmaker context — 종료 시 자동 close
+    async with SessionLocal() as db:
+        sess = await db.get(models.CallSession, session_id)
         if not sess:
             await websocket.send_json({"type": "error", "where": "session", "message": "not found"})
             await websocket.close()

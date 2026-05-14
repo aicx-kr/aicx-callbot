@@ -10,18 +10,18 @@ class TenantService:
     def __init__(self, repo: TenantRepository) -> None:
         self._repo = repo
 
-    def list(self) -> list[Tenant]:
-        return self._repo.list()
+    async def list(self) -> list[Tenant]:
+        return await self._repo.list()
 
-    def get(self, tenant_id: int) -> Tenant | None:
-        return self._repo.get(tenant_id)
+    async def get(self, tenant_id: int) -> Tenant | None:
+        return await self._repo.get(tenant_id)
 
-    def create(self, *, name: str, slug: str) -> Tenant:
-        existing = self._repo.find_by_slug(slug)
+    async def create(self, *, name: str, slug: str) -> Tenant:
+        existing = await self._repo.find_by_slug(slug)
         if existing is not None:
             raise DomainError(f"slug '{slug}'가 이미 존재합니다")
         t = Tenant(id=None, name=name, slug=slug)
-        return self._repo.save(t)
+        return await self._repo.save(t)
 
-    def delete(self, tenant_id: int) -> None:
-        self._repo.delete(tenant_id)
+    async def delete(self, tenant_id: int) -> None:
+        await self._repo.delete(tenant_id)
