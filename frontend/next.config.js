@@ -2,6 +2,7 @@
 const API_TARGET = process.env.BACKEND_URL || 'http://localhost:8765';
 
 const nextConfig = {
+  output: 'standalone',
   async rewrites() {
     return [
       { source: '/api/:path*', destination: `${API_TARGET}/api/:path*` },

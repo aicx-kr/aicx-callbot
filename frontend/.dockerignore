@@ -1,0 +1,15 @@
+node_modules
+.next
+out
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.vscode
+.idea
+*.log
+README.md
+Dockerfile
+.dockerignore
+callbot.db
