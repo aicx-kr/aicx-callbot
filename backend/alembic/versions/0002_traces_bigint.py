@@ -20,10 +20,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.alter_column("traces", "t_start_ms", type_=sa.BigInteger(), existing_type=sa.Integer(), existing_nullable=True)
-    op.alter_column("traces", "duration_ms", type_=sa.BigInteger(), existing_type=sa.Integer(), existing_nullable=True)
+    # SQLite 는 ALTER COLUMN ... TYPE 를 지원하지 않으므로 batch_alter_table 로 우회.
+    # PostgreSQL 은 batch 모드도 정상 ALTER 로 동작 — 양쪽 백엔드 호환.
+    with op.batch_alter_table("traces") as batch_op:
+        batch_op.alter_column("t_start_ms", type_=sa.BigInteger(), existing_type=sa.Integer(), existing_nullable=True)
+        batch_op.alter_column("duration_ms", type_=sa.BigInteger(), existing_type=sa.Integer(), existing_nullable=True)
 
 
 def downgrade() -> None:
-    op.alter_column("traces", "duration_ms", type_=sa.Integer(), existing_type=sa.BigInteger(), existing_nullable=True)
-    op.alter_column("traces", "t_start_ms", type_=sa.Integer(), existing_type=sa.BigInteger(), existing_nullable=True)
+    with op.batch_alter_table("traces") as batch_op:
+        batch_op.alter_column("duration_ms", type_=sa.Integer(), existing_type=sa.BigInteger(), existing_nullable=True)
+        batch_op.alter_column("t_start_ms", type_=sa.Integer(), existing_type=sa.BigInteger(), existing_nullable=True)

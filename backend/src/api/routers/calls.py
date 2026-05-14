@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...domain.call_session import normalize_end_reason
 from ...infrastructure import models
 from ...infrastructure.adapters.factory import is_voice_mode_available
 from ...infrastructure.db import get_db
@@ -43,7 +44,8 @@ async def end_call(session_id: int, db: AsyncSession = Depends(get_db)):
     if s.status != "ended":
         s.status = "ended"
         s.ended_at = datetime.utcnow()
-        s.end_reason = s.end_reason or "user_end"
+        # AICC-909 — end_reason 6값 enum 정규화 (HTTP POST 종료는 사용자 의도이므로 normal)
+        s.end_reason = normalize_end_reason(s.end_reason or "normal")
         await db.commit()
     return {"ended": True}
 

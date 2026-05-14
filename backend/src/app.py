@@ -1,6 +1,7 @@
 """FastAPI 애플리케이션 팩토리."""
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from sqlalchemy import select
 
 from .api.routers import bots, callbot_agents, calls, knowledge, mcp_servers, skills, tenants, tools, transcripts
 from .api.ws import voice
+from .core.config import settings
+from .core.logging import setup_logging
+from .domain.call_session import normalize_end_reason
 from .infrastructure.db import SessionLocal
 from .infrastructure.seed import seed_if_empty
 
@@ -74,13 +78,48 @@ async def _backfill_callbot_agents(db):
     await db.commit()
 
 
+async def _backfill_end_reason_enum(db) -> int:
+    """기존 자유 문자열 end_reason 을 6값 EndReason enum 으로 backfill.
+
+    AICC-909 §4.4 / 출구기준 §6. 6값: normal / idle_timeout / transfer_handoff /
+    bot_terminate / error / client_disconnect.
+
+    Alembic 0003 의 data migration 은 SQLite UPDATE 한 줄로 끝낼 수도 있지만,
+    매핑 로직 (`global_rule:*` → bot_terminate 등) 이 도메인 함수에 있으므로
+    Python 으로 처리. idempotent — 이미 6값인 행은 그대로 유지.
+    """
+    from .infrastructure import models as M
+    from .domain.call_session import END_REASONS
+
+    stmt = select(M.CallSession).where(M.CallSession.end_reason.isnot(None))
+    rows = (await db.execute(stmt)).scalars().all()
+    changed = 0
+    for s in rows:
+        if s.end_reason in END_REASONS:
+            continue
+        s.end_reason = normalize_end_reason(s.end_reason)
+        changed += 1
+    if changed:
+        await db.commit()
+    return changed
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # AICC-909 — 가장 먼저 JSON 로깅 + Slack 핸들러 attach (alembic / seed 로그도 JSON 으로).
+    level = getattr(logging, (settings.log_level or "INFO").upper(), logging.INFO)
+    setup_logging(
+        level=level,
+        slack_webhook_url=settings.slack_webhook_url or None,
+        slack_rate_limit_window_s=settings.slack_rate_limit_window_s,
+    )
     # alembic upgrade — 별도 스레드에서 (env.py 내부의 asyncio.run 과 충돌 방지)
     await asyncio.to_thread(_run_alembic_upgrade)
     async with SessionLocal() as db:
         await seed_if_empty(db)
         await _backfill_callbot_agents(db)
+        # AICC-909 — 레거시 end_reason 자유 문자열을 6값 enum 으로 정규화 (idempotent)
+        await _backfill_end_reason_enum(db)
     yield
 
 

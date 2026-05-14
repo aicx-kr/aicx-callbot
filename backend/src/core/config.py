@@ -61,5 +61,13 @@ class Settings(BaseSettings):
     document_processor_top_k: int = 5
     document_processor_timeout_s: float = 5.0
 
+    # AICC-909 — 로깅·관측성 인프라
+    # JSON 로그 레벨 (DEBUG/INFO/WARNING/ERROR). uvicorn 의 logging-level 과 별개.
+    log_level: str = "INFO"
+    # Slack 인시던트 알림 webhook. 비면 Slack 핸들러 미부착 (개발 환경 기본 동작).
+    slack_webhook_url: str = ""
+    # 같은 (logger, msg_template) 키 윈도우 — 같은 에러 100x burst → Slack 1회.
+    slack_rate_limit_window_s: float = 60.0
+
 
 settings = Settings()
