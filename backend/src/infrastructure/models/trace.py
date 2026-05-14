@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import JSON, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, BigInteger, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -20,8 +20,9 @@ class Trace(Base):
     parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("traces.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), default="span")  # turn | llm | tool | tts | stt | span
-    t_start_ms: Mapped[int] = mapped_column(Integer, default=0)  # epoch ms
-    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    # epoch ms (1.7e12+) — int32 overflow 방지 위해 BigInteger.
+    t_start_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    duration_ms: Mapped[int] = mapped_column(BigInteger, default=0)
     input_json: Mapped[dict] = mapped_column(JSON, default=dict)
     output_text: Mapped[str] = mapped_column(Text, default="")
     meta_json: Mapped[dict] = mapped_column(JSON, default=dict)
