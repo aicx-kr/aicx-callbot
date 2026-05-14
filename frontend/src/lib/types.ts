@@ -22,7 +22,7 @@ export interface CallbotMembership {
   branch_trigger: string;
   voice_override: string;
   /** AICC-908 — true 면 인계 시 안내 멘트 TTS 생략. 기본 false. */
-  silent_transfer?: boolean;
+  silent_transfer: boolean;
 }
 
 export interface CallbotAgent {

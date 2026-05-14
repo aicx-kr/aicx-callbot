@@ -73,10 +73,14 @@ class CallbotAgentService:
         for i, m in enumerate(agent.memberships):
             if m.id == member_id:
                 updates = {}
-                if order is not None: updates["order"] = order
-                if branch_trigger is not None: updates["branch_trigger"] = branch_trigger
-                if voice_override is not None: updates["voice_override"] = voice_override
-                if silent_transfer is not None: updates["silent_transfer"] = silent_transfer
+                if order is not None:
+                    updates["order"] = order
+                if branch_trigger is not None:
+                    updates["branch_trigger"] = branch_trigger
+                if voice_override is not None:
+                    updates["voice_override"] = voice_override
+                if silent_transfer is not None:
+                    updates["silent_transfer"] = silent_transfer
                 if updates:
                     agent.memberships[i] = replace(m, **updates)
                 break
