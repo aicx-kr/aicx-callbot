@@ -22,6 +22,8 @@ COPY alembic.ini ./
 COPY main.py ./
 
 ENV PATH="/app/.venv/bin:$PATH"
+# stdout/stderr 즉시 flush — 운영 로그 실시간 노출 위해
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8765
 
