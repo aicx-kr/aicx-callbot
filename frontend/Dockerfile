@@ -11,7 +11,10 @@ RUN pnpm install --frozen-lockfile
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# rewrites 의 BACKEND_URL 은 런타임 결정 — 빌드 시 placeholder
+# next.config.js 의 rewrites 의 BACKEND_URL 은 빌드 시 평가됨 (Next.js 특성)
+# → workflow build-args 로 환경별 backend URL 주입
+ARG BACKEND_URL=http://localhost:8765
+ENV BACKEND_URL=$BACKEND_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
