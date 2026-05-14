@@ -1,13 +1,19 @@
 import secrets
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...application.tag_service import TagService
 from ...infrastructure import models
 from ...infrastructure.adapters.factory import is_voice_mode_available
 from ...infrastructure.db import get_db
+from ...infrastructure.repositories.tag_repository import (
+    SqlAlchemyBotTagPolicyRepository,
+    SqlAlchemyCallTagRepository,
+    SqlAlchemyTagRepository,
+)
 from .. import schemas
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
@@ -49,7 +55,31 @@ async def end_call(session_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("", response_model=list[schemas.CallSessionOut])
-async def list_sessions(bot_id: int | None = None, limit: int = 100, db: AsyncSession = Depends(get_db)):
+async def list_sessions(
+    bot_id: int | None = None,
+    limit: int = 100,
+    tag_id: list[int] | None = Query(default=None),  # AICC-912 — 다중 태그 AND 필터
+    db: AsyncSession = Depends(get_db),
+):
+    # AICC-912 — tag_id 가 1개 이상이면 봇 + 태그(AND) 필터.
+    # bot_id 가 함께 와야 의미가 있음 (테넌트 전역 검색은 후속 — 멀티테넌트화 시).
+    if tag_id and bot_id is not None:
+        svc = TagService(
+            tag_repo=SqlAlchemyTagRepository(db),
+            call_tag_repo=SqlAlchemyCallTagRepository(db),
+            policy_repo=SqlAlchemyBotTagPolicyRepository(db),
+        )
+        ids = await svc.list_calls_by_tags(bot_id, list(tag_id), mode="and")
+        if not ids:
+            return []
+        stmt = (
+            select(models.CallSession)
+            .where(models.CallSession.id.in_(ids))
+            .order_by(models.CallSession.id.desc())
+            .limit(limit)
+        )
+        return list((await db.execute(stmt)).scalars().all())
+
     stmt = select(models.CallSession)
     if bot_id is not None:
         stmt = stmt.where(models.CallSession.bot_id == bot_id)

@@ -162,3 +162,29 @@ export interface Health {
   status: string;
   voice_mode_available: boolean;
 }
+
+// AICC-912 — 통화 자동 태깅
+export interface Tag {
+  id: number;
+  tenant_id: string;
+  name: string;
+  /** hex(#rrggbb) 또는 팔레트 키. 빈 문자열이면 UI 기본색. */
+  color: string;
+  is_active: boolean;
+}
+
+export type TagSource = 'auto' | 'manual';
+
+export interface CallTag {
+  call_session_id: number;
+  tag_id: number;
+  source: TagSource;
+  created_at: string | null;
+  created_by: string | null;
+}
+
+export interface BotTagPolicy {
+  bot_id: number;
+  /** 봇의 자동 태깅 허용 태그 ID 목록. 빈 배열이면 자동 태깅 비활성. */
+  allowed_tag_ids: number[];
+}

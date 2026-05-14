@@ -313,3 +313,44 @@ class TraceOut(_Base):
     output_text: str
     meta_json: dict
     error_text: str | None = None
+
+
+# ---------- AICC-912 통화 자동 태깅 ----------
+class TagOut(_Base):
+    id: int
+    tenant_id: str
+    name: str
+    color: str = ""
+    is_active: bool = True
+
+
+class TagCreate(BaseModel):
+    name: str
+    color: str = ""
+
+
+class TagUpdate(BaseModel):
+    name: str | None = None
+    color: str | None = None
+    is_active: bool | None = None
+
+
+class CallTagOut(BaseModel):
+    call_session_id: int
+    tag_id: int
+    source: str  # "auto" | "manual"
+    created_at: datetime | None = None
+    created_by: str | None = None
+
+
+class CallTagCreate(BaseModel):
+    tag_id: int
+
+
+class BotTagPolicyOut(BaseModel):
+    bot_id: int
+    allowed_tag_ids: list[int] = []
+
+
+class BotTagPolicyUpdate(BaseModel):
+    tag_ids: list[int]
