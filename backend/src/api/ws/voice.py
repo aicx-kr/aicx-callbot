@@ -37,65 +37,68 @@ router = APIRouter()
 async def voice_ws(websocket: WebSocket, session_id: int):
     await websocket.accept()
 
-    # async sessionmaker context — 종료 시 자동 close
+    # 세션 격리: 초기 CallSession 존재 확인용 짧은 세션 — VoiceSession 으로 넘기지 않는다.
+    # VoiceSession 내부의 STT/LLM/TTS/tracer task 들이 각자 SessionLocal() 을 열어 사용한다
+    # (AsyncSession 공유 시 IllegalStateChangeError race 발생).
     async with SessionLocal() as db:
         sess = await db.get(models.CallSession, session_id)
         if not sess:
             await websocket.send_json({"type": "error", "where": "session", "message": "not found"})
             await websocket.close()
             return
+        sess_id = sess.id
+        bot_id = sess.bot_id
 
-        async def send_bytes(b: bytes):
-            try:
-                await websocket.send_bytes(b)
-            except Exception:
-                pass
-
-        async def send_json(d: dict):
-            try:
-                await websocket.send_text(json.dumps(d, ensure_ascii=False))
-            except Exception:
-                pass
-
-        voice = VoiceSession(
-            db=db,
-            session_id=sess.id,
-            bot_id=sess.bot_id,
-            stt=get_stt(),
-            tts=get_tts(),
-            llm=get_llm(),
-            vad=get_vad(),
-            send_bytes=send_bytes,
-            send_json=send_json,
-            sample_rate=settings.stt_sample_rate,
-        )
-        await voice.start()
-
+    async def send_bytes(b: bytes):
         try:
-            while True:
-                msg = await websocket.receive()
-                if msg["type"] == "websocket.disconnect":
-                    break
-                if "bytes" in msg and msg["bytes"] is not None:
-                    await voice.on_audio(msg["bytes"])
-                elif "text" in msg and msg["text"] is not None:
-                    try:
-                        data = json.loads(msg["text"])
-                    except json.JSONDecodeError:
-                        continue
-                    mtype = data.get("type")
-                    if mtype == "text":
-                        await voice.on_text_message(data.get("text", ""))
-                    elif mtype == "end_call":
-                        await voice.close(reason="user_end")
-                        break
-                    elif mtype == "interrupt":
-                        # 즉시 봇 발화 중단 — 다음 발화 사이클까지 idle 유지
-                        if voice.state.speech_task and not voice.state.speech_task.done():
-                            voice.state.speech_task.cancel()
-                        await voice.set_state("idle")
-        except WebSocketDisconnect:
-            await voice.close(reason="disconnect")
+            await websocket.send_bytes(b)
         except Exception:
-            logger.exception("voice ws error")
-            await voice.close(reason="error")
+            pass
+
+    async def send_json(d: dict):
+        try:
+            await websocket.send_text(json.dumps(d, ensure_ascii=False))
+        except Exception:
+            pass
+
+    voice = VoiceSession(
+        session_id=sess_id,
+        bot_id=bot_id,
+        stt=get_stt(),
+        tts=get_tts(),
+        llm=get_llm(),
+        vad=get_vad(),
+        send_bytes=send_bytes,
+        send_json=send_json,
+        sample_rate=settings.stt_sample_rate,
+    )
+    await voice.start()
+
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            if "bytes" in msg and msg["bytes"] is not None:
+                await voice.on_audio(msg["bytes"])
+            elif "text" in msg and msg["text"] is not None:
+                try:
+                    data = json.loads(msg["text"])
+                except json.JSONDecodeError:
+                    continue
+                mtype = data.get("type")
+                if mtype == "text":
+                    await voice.on_text_message(data.get("text", ""))
+                elif mtype == "end_call":
+                    await voice.close(reason="user_end")
+                    break
+                elif mtype == "interrupt":
+                    # 즉시 봇 발화 중단 — 다음 발화 사이클까지 idle 유지
+                    if voice.state.speech_task and not voice.state.speech_task.done():
+                        voice.state.speech_task.cancel()
+                    await voice.set_state("idle")
+    except WebSocketDisconnect:
+        await voice.close(reason="disconnect")
+    except Exception:
+        logger.exception("voice ws error")
+        await voice.close(reason="error")
