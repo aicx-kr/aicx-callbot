@@ -271,7 +271,7 @@ class VoiceSession:
         out.update(self.state.var_ctx.extracted) # extracted > dynamic
         return out
 
-    def _membership_silent_transfer(self, target_bot_id: int) -> bool:
+    async def _membership_silent_transfer(self, target_bot_id: int) -> bool:
         """AICC-908 — 인계 대상 봇의 CallbotMembership.silent_transfer 조회.
 
         같은 CallbotAgent 안의 멤버십을 우선 조회 — 동일 봇이 여러 콜봇에 속할 수 있어도
@@ -280,28 +280,23 @@ class VoiceSession:
         if not target_bot_id:
             return False
         # 현재 통화 봇이 속한 콜봇을 찾고, 그 콜봇 안에서 target 멤버십 조회
-        current_membership = (
-            self.db.query(models.CallbotMembership)
-            .filter(models.CallbotMembership.bot_id == self.bot_id)
-            .first()
-        )
+        current_stmt = select(models.CallbotMembership).where(
+            models.CallbotMembership.bot_id == self.bot_id
+        ).limit(1)
+        current_membership = (await self.db.execute(current_stmt)).scalars().first()
         if current_membership is not None:
-            target_membership = (
-                self.db.query(models.CallbotMembership)
-                .filter(
-                    models.CallbotMembership.callbot_id == current_membership.callbot_id,
-                    models.CallbotMembership.bot_id == target_bot_id,
-                )
-                .first()
-            )
+            target_stmt = select(models.CallbotMembership).where(
+                models.CallbotMembership.callbot_id == current_membership.callbot_id,
+                models.CallbotMembership.bot_id == target_bot_id,
+            ).limit(1)
+            target_membership = (await self.db.execute(target_stmt)).scalars().first()
             if target_membership is not None:
                 return bool(getattr(target_membership, "silent_transfer", False))
         # fallback — 어느 콜봇에 속한 멤버십이라도 첫 번째 행 사용
-        any_membership = (
-            self.db.query(models.CallbotMembership)
-            .filter(models.CallbotMembership.bot_id == target_bot_id)
-            .first()
-        )
+        any_stmt = select(models.CallbotMembership).where(
+            models.CallbotMembership.bot_id == target_bot_id
+        ).limit(1)
+        any_membership = (await self.db.execute(any_stmt)).scalars().first()
         if any_membership is not None:
             return bool(getattr(any_membership, "silent_transfer", False))
         return False
@@ -1029,7 +1024,7 @@ class VoiceSession:
             #   state.var_ctx (system+dynamic+extracted), state.transcripts, DB Transcript 모두 그대로 유지.
             #   bot_id만 교체하고 build_runtime을 새 봇으로 다시 호출 → system_prompt만 sub 봇 페르소나로 갱신.
             #   _build_history는 session_id 기반 DB 쿼리라 sub 봇에서도 동일 history 조회 가능.
-            silent = self._membership_silent_transfer(target_id)
+            silent = await self._membership_silent_transfer(target_id)
             self.bot_id = target_bot.id
             self.state.active_skill = None
             self.state.auto_context = {}
@@ -1185,7 +1180,7 @@ class VoiceSession:
                 await self.send_json({"type": "error", "where": "transfer_to_agent", "message": f"target bot {target_id} not found"})
                 return
             # AICC-908 — silent_transfer 멤버십 플래그 적용 (자세한 의미는 _execute_tool_for_loop 분기 참조)
-            silent = self._membership_silent_transfer(target_id)
+            silent = await self._membership_silent_transfer(target_id)
             self.bot_id = target_bot.id
             self.state.active_skill = None
             self.state.auto_context = {}
