@@ -37,6 +37,9 @@ gcp-key*.json
 .DS_Store
 Thumbs.db
 
+# vox API raw snapshots (PII 우려)
+docs/plans/.vox-snapshots/
+
 # IDE
 .vscode/
 .idea/
