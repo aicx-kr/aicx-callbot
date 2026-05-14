@@ -32,7 +32,7 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.String(64), nullable=False, server_default="default"),
         sa.Column("name", sa.String(64), nullable=False),
         sa.Column("color", sa.String(32), nullable=False, server_default=""),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.UniqueConstraint("tenant_id", "name", name="uq_tags_tenant_name"),
     )
     op.create_index("ix_tags_tenant_id", "tags", ["tenant_id"])
