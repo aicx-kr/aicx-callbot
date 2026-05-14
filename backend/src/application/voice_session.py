@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -18,6 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from ..core.config import settings
+from ..core.logging import get_logger, hash_text
+from ..domain.call_session import normalize_end_reason
 from ..domain.global_rule import GlobalAction, dispatch as dispatch_global_rules
 from ..domain.ports import ChatMessage, LLMPort, STTPort, ToolSpec, TTSPort, VADPort
 from ..domain.variable import VariableContext
@@ -97,7 +99,7 @@ def _params_to_json_schema(params: list[dict] | None) -> dict:
         schema["required"] = required
     return schema
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 SendBytes = Callable[[bytes], Awaitable[None]]
 SendJSON = Callable[[dict], Awaitable[None]]
@@ -372,10 +374,12 @@ class VoiceSession:
             if not self._closed:
                 await self.set_state("idle")
 
-    async def close(self, reason: str = "user_end") -> None:
+    async def close(self, reason: str = "normal") -> None:
         if self._closed:
             return
         self._closed = True
+        # AICC-909 — 6값 EndReason enum 으로 정규화 (레거시 user_end / disconnect / global_rule:* 흡수)
+        normalized_reason = normalize_end_reason(reason)
         if self.state.speech_task and not self.state.speech_task.done():
             self.state.speech_task.cancel()
         if self._stt_task and not self._stt_task.done():
@@ -398,13 +402,15 @@ class VoiceSession:
 
                 sess.status = "ended"
                 sess.ended_at = datetime.utcnow()
-                sess.end_reason = reason
+                sess.end_reason = normalized_reason
                 if sess.bot and sess.bot.llm_model:
                     model_name = sess.bot.llm_model
                 await db.commit()
             elif sess and sess.bot and sess.bot.llm_model:
                 model_name = sess.bot.llm_model
-        await self.send_json({"type": "end", "reason": reason})
+        await self.send_json({"type": "end", "reason": normalized_reason})
+        # AICC-909 표준 이벤트 — reason 은 EndReason enum 값.
+        logger.event("call.end", reason=normalized_reason)
 
         # 통화 후 분석 (백그라운드 태스크) — 자체 SessionLocal 로 처리 (post_call.analyze_session)
         asyncio.create_task(self._run_post_call_analysis(model_name))
@@ -417,7 +423,7 @@ class VoiceSession:
             import time as _time
             elapsed = _time.monotonic() - self.state.last_speak_end_t
             if elapsed < _ECHO_GRACE_S:
-                logger.debug("speech_start ignored — within echo grace (%.0f ms)", elapsed * 1000)
+                logger.debug("speech_start ignored — within echo grace", elapsed_ms=int(elapsed * 1000))
                 return
         # barge-in: 봇이 말하는 중이면 즉시 중단
         if self.state.state == "speaking" and self.state.speech_task:
@@ -488,7 +494,11 @@ class VoiceSession:
                 used_prefetch = True
                 return runtime, used_prefetch
             except Exception as e:
-                logger.warning("prefetched runtime failed, falling back to fresh build: %s", e)
+                logger.warning(
+                    "prefetched runtime failed, falling back to fresh build",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
         async with SessionLocal() as db:
             runtime, _ = await build_runtime(
                 db,
@@ -520,6 +530,14 @@ class VoiceSession:
             "stt", "stt",
             input={"language": runtime.language, "sample_rate": self.sample_rate},
         )
+        # AICC-909 — STT 세션 단위 latency 측정. tracer.duration_ms 와 별개로 JSON 로그 stt_ms 분리.
+        stt_mono_start = time.monotonic()
+        logger.event(
+            "stt.session_started",
+            vendor=settings.provider_stt,
+            language=runtime.language,
+            sample_rate=self.sample_rate,
+        )
         final_text = ""
         partial_count = 0
         try:
@@ -543,20 +561,45 @@ class VoiceSession:
                 if result.is_final:
                     final_text = result.text
         except asyncio.CancelledError:
-            await self._tracer.end(stt_id, stt_start, meta={"cancelled": True, "partials": partial_count, "chunks": chunk_count, "bytes": chunk_bytes})
+            stt_ms = int((time.monotonic() - stt_mono_start) * 1000)
+            await self._tracer.end(stt_id, stt_start, meta={"cancelled": True, "partials": partial_count, "chunks": chunk_count, "bytes": chunk_bytes, "stt_ms": stt_ms})
+            logger.event(
+                "stt.session_ended",
+                stt_ms=stt_ms,
+                total_partials=partial_count,
+                total_finals=0,
+                cancelled=True,
+            )
             return
         except Exception as e:
-            await self._tracer.end(stt_id, stt_start, error=str(e), meta={"partials": partial_count, "chunks": chunk_count, "bytes": chunk_bytes})
-            logger.exception("STT error: %s", e)
+            stt_ms = int((time.monotonic() - stt_mono_start) * 1000)
+            await self._tracer.end(stt_id, stt_start, error=str(e), meta={"partials": partial_count, "chunks": chunk_count, "bytes": chunk_bytes, "stt_ms": stt_ms})
+            logger.error(
+                "stt.error",
+                event="stt.error",
+                error_type=type(e).__name__,
+                vendor=settings.provider_stt,
+                stt_ms=stt_ms,
+            )
             await self.send_json({"type": "error", "where": "stt", "message": str(e)})
             await self.set_state("idle")
             return
 
+        stt_ms = int((time.monotonic() - stt_mono_start) * 1000)
         await self._tracer.end(
             stt_id, stt_start,
             output=final_text or None,
             meta={"partials": partial_count, "final_chars": len(final_text),
-                  "chunks": chunk_count, "bytes": chunk_bytes},
+                  "chunks": chunk_count, "bytes": chunk_bytes, "stt_ms": stt_ms},
+        )
+        # AICC-909 — stt.final 표준 이벤트. PII 정책: text 본문 X, text_hash + char_count 만.
+        logger.event(
+            "stt.final",
+            stt_ms=stt_ms,
+            char_count=len(final_text),
+            text_hash=hash_text(final_text),
+            partials=partial_count,
+            vendor=settings.provider_stt,
         )
         if final_text.strip():
             await self._handle_user_final(final_text.strip())
@@ -672,7 +715,10 @@ class VoiceSession:
                     db_tool_names = {t.name for t in bot.tools if t.is_enabled} if bot else set()
                     tool_names = _BUILTIN_TOOL_NAMES | db_tool_names
                     if signal.next_skill not in skill_names and signal.next_skill in tool_names:
-                        logger.info("LLM이 도구 이름을 next_skill로 보냄 — 무시 (native FC로 처리됨): %s", signal.next_skill)
+                        logger.info(
+                            "LLM이 도구 이름을 next_skill로 보냄 — 무시 (native FC로 처리됨)",
+                            next_skill=signal.next_skill,
+                        )
                     else:
                         self.state.active_skill = signal.next_skill
                         await self.send_json({"type": "skill", "name": signal.next_skill})
@@ -748,7 +794,11 @@ class VoiceSession:
             return formatted
         except Exception as e:
             await self._tracer.end(span_id, span_start, error=str(e))
-            logger.warning("external_kb_retrieve failed: %s", e)
+            logger.warning(
+                "external_kb_retrieve failed",
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
             return ""
 
     # ---------- callbot_v0 흡수 #2 — streaming + 문장 TTS ----------
@@ -786,6 +836,17 @@ class VoiceSession:
                    "model": runtime.llm_model, "tools_count": len(tool_specs),
                    "history": [{"role": h.role, "text": h.text} for h in history]},
         )
+        llm_mono_start = time.monotonic()
+        # AICC-909 — llm.request 표준 이벤트. PII: system_prompt/user_text 본문 X, hash 만.
+        logger.event(
+            "llm.request",
+            model=runtime.llm_model,
+            system_prompt_hash=hash_text(system_prompt),
+            user_text_hash=hash_text(user_text),
+            user_text_chars=len(user_text),
+            history_turns=len(history),
+            tools_count=len(tool_specs),
+        )
 
         stream_iter = self.llm.stream(
             system_prompt=system_prompt, user_text=user_text, model=runtime.llm_model,
@@ -798,11 +859,20 @@ class VoiceSession:
                         first_chunk = chunk
                         # 첫 chunk가 tool_call이면 stream 닫고 tool 루프로
                         if chunk.tool_call:
+                            llm_ms = int((time.monotonic() - llm_mono_start) * 1000)
                             await self._tracer.end(
                                 llm_id, llm_start,
                                 output=f"<tool_call: {chunk.tool_call.name}>",
                                 meta={"model": runtime.llm_model, "tool_call": chunk.tool_call.name,
-                                      "sentences": 0},
+                                      "sentences": 0, "llm_ms": llm_ms},
+                            )
+                            logger.event(
+                                "llm.response",
+                                model=runtime.llm_model,
+                                llm_ms=llm_ms,
+                                finish_reason="tool_call",
+                                tool_calls_count=1,
+                                sentences=0,
                             )
                             try:
                                 await stream_iter.aclose()
@@ -824,17 +894,34 @@ class VoiceSession:
                 # signal 파싱을 위해 누적 텍스트 + 만약 partial을 따로 받았다면 합치는 로직 필요 —
                 # 현 구현은 partial도 sentence로 함께 yield되어 sentences에 들어가므로 그대로 join 사용.
             except Exception as e:
-                await self._tracer.end(llm_id, llm_start, error=str(e))
-                logger.exception("LLM stream error: %s", e)
+                llm_ms = int((time.monotonic() - llm_mono_start) * 1000)
+                await self._tracer.end(llm_id, llm_start, error=str(e), meta={"llm_ms": llm_ms})
+                logger.error(
+                    "llm.error",
+                    event="llm.error",
+                    error_type=type(e).__name__,
+                    model=runtime.llm_model,
+                    llm_ms=llm_ms,
+                )
+                logger.exception("LLM stream error", error_type=type(e).__name__)
                 await self.send_json({"type": "error", "where": "llm", "message": str(e)})
                 await self.set_state("idle")
                 return None, None
 
+            llm_ms = int((time.monotonic() - llm_mono_start) * 1000)
             await self._tracer.end(
                 llm_id, llm_start,
                 output=" ".join(sentences),
                 meta={"model": runtime.llm_model, "tool_call": None,
-                      "sentences": len(sentences)},
+                      "sentences": len(sentences), "llm_ms": llm_ms},
+            )
+            logger.event(
+                "llm.response",
+                model=runtime.llm_model,
+                llm_ms=llm_ms,
+                finish_reason="stop",
+                sentences=len(sentences),
+                response_chars=sum(len(s) for s in sentences),
             )
         finally:
             pass
@@ -856,11 +943,32 @@ class VoiceSession:
             f"tts.s{idx}", "tts", parent_id=turn_id,
             input={"text": sentence, "voice": runtime.voice, "language": runtime.language},
         )
+        tts_mono_start = time.monotonic()
         try:
             await self._speak(sentence, runtime.voice, runtime.language)
-            await self._tracer.end(tts_id, tts_start, meta={"chars": len(sentence)})
+            tts_ms = int((time.monotonic() - tts_mono_start) * 1000)
+            await self._tracer.end(tts_id, tts_start, meta={"chars": len(sentence), "tts_ms": tts_ms})
+            # AICC-909 — tts.synthesized 표준 이벤트.
+            logger.event(
+                "tts.synthesized",
+                tts_ms=tts_ms,
+                char_count=len(sentence),
+                voice=runtime.voice,
+                language=runtime.language,
+                vendor=settings.provider_tts,
+                sentence_idx=idx,
+            )
         except Exception as e:
-            await self._tracer.end(tts_id, tts_start, error=str(e))
+            tts_ms = int((time.monotonic() - tts_mono_start) * 1000)
+            await self._tracer.end(tts_id, tts_start, error=str(e), meta={"tts_ms": tts_ms})
+            logger.error(
+                "tts.error",
+                event="tts.error",
+                error_type=type(e).__name__,
+                vendor=settings.provider_tts,
+                voice=runtime.voice,
+                tts_ms=tts_ms,
+            )
             raise
 
     async def _run_tool_loop_after_stream(
@@ -893,7 +1001,7 @@ class VoiceSession:
                 return
 
         if response.tool_call is not None and tool_iter >= max_iter:
-            logger.warning("tool loop reached max iterations=%d", max_iter)
+            logger.warning("tool loop reached max iterations", max_iter=max_iter)
 
         # 마지막 text 응답 TTS — 비-stream이라 통째로
         text = (response.text or "").strip()
@@ -984,7 +1092,7 @@ class VoiceSession:
             return response
         except Exception as e:
             await self._tracer.end(llm_id, llm_start, error=str(e))
-            logger.exception("LLM error: %s", e)
+            logger.exception("LLM error", error_type=type(e).__name__)
             await self.send_json({"type": "error", "where": "llm", "message": str(e)})
             await self.set_state("idle")
             return None
@@ -1014,7 +1122,7 @@ class VoiceSession:
             return response
         except Exception as e:
             await self._tracer.end(llm_id, llm_start, error=str(e))
-            logger.exception("LLM continue_after_tool error: %s", e)
+            logger.exception("LLM continue_after_tool error", error_type=type(e).__name__)
             await self.send_json({"type": "error", "where": "llm", "message": str(e)})
             await self.set_state("idle")
             return None
@@ -1326,7 +1434,11 @@ class VoiceSession:
                         raise
             except Exception as e:
                 await self._tracer.end(llm2_id, llm2_start, error=str(e))
-                logger.warning("tool followup failed: %s", e)
+                logger.warning(
+                    "tool followup failed",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
 
     async def _record_tool_invocation(
         self, name: str, args: dict, result=None, error: str | None = None, duration_ms: int = 0
@@ -1344,7 +1456,11 @@ class VoiceSession:
                 db.add(inv)
                 await db.commit()
         except Exception as e:
-            logger.warning("record tool invocation failed: %s", e)
+            logger.warning(
+                "record tool invocation failed",
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
 
     async def _handle_mcp_tool(self, tool_name: str, args: dict, runtime, turn_id: int | None) -> None:
         """LLM이 호출한 이름이 DB Tool에 없으면 MCP 서버들 중 매칭되는 곳으로 proxy."""
@@ -1433,7 +1549,11 @@ class VoiceSession:
                         raise
             except Exception as e:
                 await self._tracer.end(llm2_id, llm2_start, error=str(e))
-                logger.warning("MCP tool followup failed: %s", e)
+                logger.warning(
+                    "MCP tool followup failed",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
 
     async def _run_auto_calls(self, trigger: str) -> None:
         """auto_call_on=trigger 인 모든 도구를 자동 실행 (args 없음).
@@ -1502,7 +1622,11 @@ class VoiceSession:
         try:
             await analyze_session(self.session_id, self.llm, model)
         except Exception as e:
-            logger.warning("post-call analysis task failed: %s", e)
+            logger.warning(
+                "post-call analysis task failed",
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
 
     async def _speak(self, text: str, voice: str, language: str) -> None:
         import time as _time
@@ -1522,7 +1646,7 @@ class VoiceSession:
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.exception("TTS error: %s", e)
+                logger.exception("TTS error", error_type=type(e).__name__)
                 await self.send_json({"type": "error", "where": "tts", "message": str(e)})
 
         self.state.speech_task = asyncio.create_task(speak_task())
