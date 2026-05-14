@@ -25,6 +25,14 @@ export interface CallbotMembership {
   silent_transfer: boolean;
 }
 
+/** AICC-910 (c) DTMF action — 4 종류 + payload. */
+export type DTMFActionType = 'transfer_to_agent' | 'say' | 'terminate' | 'inject_intent';
+
+export interface DTMFAction {
+  type: DTMFActionType;
+  payload: string;
+}
+
 export interface CallbotAgent {
   id: number;
   tenant_id: number;
@@ -33,8 +41,24 @@ export interface CallbotAgent {
   greeting: string;
   language: string;
   llm_model: string;
+  /** 레거시 — TTS 치환용. 신규 데이터는 tts_pronunciation 사용. */
   pronunciation_dict: Record<string, string>;
-  dtmf_map: Record<string, string>;
+  /** AICC-910 (d) — TTS 텍스트 치환 (FTU → 에프티유 등). */
+  tts_pronunciation: Record<string, string>;
+  /** AICC-910 (d) — STT phrase hint. 도메인 키워드 인식률 보정. */
+  stt_keywords: string[];
+  /** AICC-910 (c) — {digit: {type, payload}}. 레거시 string 도 백엔드 read 시 변환됨. */
+  dtmf_map: Record<string, DTMFAction>;
+  /** AICC-910 (a) — 인사말 중 사용자 끼어들기 허용 여부. */
+  greeting_barge_in: boolean;
+  /** AICC-910 (b) — 무응답 자동 종료 정책 (ms) + 재안내 멘트. */
+  idle_prompt_ms: number;
+  idle_terminate_ms: number;
+  idle_prompt_text: string;
+  /** AICC-910 (e) — TTS 발화 속도 (0.5~2.0). */
+  tts_speaking_rate: number;
+  /** AICC-910 (e) — TTS 피치 (-20.0~20.0 semitones). */
+  tts_pitch: number;
   created_at: string;
   updated_at: string;
   memberships: CallbotMembership[];

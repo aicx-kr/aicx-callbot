@@ -51,6 +51,14 @@ class CallbotAgent:
     - 메인 멤버는 정확히 0개 또는 1개 (1개가 정상, 0개는 신규 생성 직후 한정)
     - 멤버 bot_id는 중복 불가
     - sub의 voice_override 비면 CallbotAgent.voice 상속
+
+    AICC-910 신규 필드:
+    - greeting_barge_in (a): 인사말 중 사용자 끼어들기 허용 여부 (기본 False)
+    - idle_prompt_ms / idle_terminate_ms / idle_prompt_text (b): 무응답 자동 종료 정책
+    - tts_pronunciation / stt_keywords (d): 발음사전 분리 (TTS 치환 / STT phrase hint)
+    - dtmf_map (c): {digit: {"type": <action>, "payload": str}} 형태로 스키마 변경 — read 시 normalize
+    - tts_speaking_rate (e): TTS 발화 속도 (0.5~2.0)
+    - tts_pitch (e): TTS 피치 (-20.0~20.0 semitones)
     """
 
     id: int | None
@@ -60,9 +68,72 @@ class CallbotAgent:
     greeting: str = "안녕하세요, 무엇을 도와드릴까요?"
     language: str = "ko-KR"
     llm_model: str = "gemini-3.1-flash-lite"
+    # (d) 발음사전 분리 — pronunciation_dict 는 레거시 호환 read-only 유지
     pronunciation_dict: dict = field(default_factory=dict)
+    tts_pronunciation: dict = field(default_factory=dict)
+    stt_keywords: list = field(default_factory=list)
+    # (c) DTMF — {"1": {"type": "transfer_to_agent", "payload": "42"}}
     dtmf_map: dict = field(default_factory=dict)
+    # (a) Barge-in 오프닝 멘트 옵션
+    greeting_barge_in: bool = False
+    # (b) 무응답 자동 종료 정책
+    idle_prompt_ms: int = 7000
+    idle_terminate_ms: int = 15000
+    idle_prompt_text: str = "여보세요?"
+    # (e) TTS 발화 속도/피치
+    tts_speaking_rate: float = 1.0
+    tts_pitch: float = 0.0
     memberships: list[CallbotMembership] = field(default_factory=list)
+
+    # ---------- 정규화 helpers (도메인 규칙 강제) ----------
+
+    @staticmethod
+    def _clamp(value: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, value))
+
+    def normalized_speaking_rate(self) -> float:
+        """google TTS AudioConfig.speaking_rate 권장 범위 [0.5, 2.0]. 범위 밖은 clamp."""
+        try:
+            return self._clamp(float(self.tts_speaking_rate), 0.5, 2.0)
+        except (TypeError, ValueError):
+            return 1.0
+
+    def normalized_pitch(self) -> float:
+        """google TTS AudioConfig.pitch 허용 범위 [-20.0, 20.0] (semitones)."""
+        try:
+            return self._clamp(float(self.tts_pitch), -20.0, 20.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def normalized_stt_keywords(self) -> list[str]:
+        """STT speech_contexts phrases 로 넘길 string list. dict 형태도 키만 추출."""
+        if isinstance(self.stt_keywords, dict):
+            return [str(k) for k in self.stt_keywords.keys() if k]
+        if isinstance(self.stt_keywords, list):
+            return [str(k) for k in self.stt_keywords if k]
+        return []
+
+    def normalized_dtmf_map(self) -> dict[str, dict]:
+        """dtmf_map 을 {digit: {type, payload}} 표준 형태로 normalize.
+
+        레거시 데이터 호환:
+          "1": "예약 변경"  →  "1": {"type": "say", "payload": "예약 변경"}
+
+        type ∈ {"transfer_to_agent", "say", "terminate", "inject_intent"}.
+        모르는 type 은 그대로 두되 payload 는 str 강제.
+        """
+        out: dict[str, dict] = {}
+        if not isinstance(self.dtmf_map, dict):
+            return out
+        for digit, entry in self.dtmf_map.items():
+            d = str(digit)
+            if isinstance(entry, dict):
+                t = str(entry.get("type") or "say")
+                p = entry.get("payload")
+                out[d] = {"type": t, "payload": "" if p is None else str(p)}
+            else:
+                out[d] = {"type": "say", "payload": str(entry) if entry is not None else ""}
+        return out
 
     # ---------- 조회 ----------
 

@@ -5,6 +5,7 @@
   text  : JSON {"type":"text","text":"..."}              # 텍스트 모드
         | {"type":"end_call"}
         | {"type":"interrupt"}
+        | {"type":"dtmf","digit":"<0-9*#>"}              # AICC-910 — 키패드 입력
 
 [server → client]
   bytes : LINEAR16 16kHz mono PCM 청크 (TTS)
@@ -99,6 +100,10 @@ async def voice_ws(websocket: WebSocket, session_id: int):
                             if voice.state.speech_task and not voice.state.speech_task.done():
                                 voice.state.speech_task.cancel()
                             await voice.set_state("idle")
+                        elif mtype == "dtmf":
+                            # AICC-910 (c) — DTMF 키패드 입력. CallbotAgent.dtmf_map 룩업 + action 실행.
+                            digit = data.get("digit") or ""
+                            await voice.on_dtmf(str(digit))
             except WebSocketDisconnect:
                 logger.event("call.disconnected", session_id=sess.id, reason="client_disconnect")
                 await voice.close(reason="client_disconnect")

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..db import Base
@@ -31,8 +31,23 @@ class CallbotAgent(Base):
     greeting: Mapped[str] = mapped_column(String(500), default="안녕하세요, 무엇을 도와드릴까요?")
     language: Mapped[str] = mapped_column(String(8), default="ko-KR")
     llm_model: Mapped[str] = mapped_column(String(64), default="gemini-3.1-flash-lite")
-    pronunciation_dict: Mapped[dict] = mapped_column(JSON, default=dict)  # {"FTU": "에프티유", ...}
-    dtmf_map: Mapped[dict] = mapped_column(JSON, default=dict)            # {"1": "환불 분기", ...}
+    # (d) AICC-910 — pronunciation_dict 는 레거시 호환 유지. 신규 쓰기는 tts_pronunciation 으로.
+    pronunciation_dict: Mapped[dict] = mapped_column(JSON, default=dict)
+    # (d) AICC-910 — TTS 텍스트 치환용 (예: "FTU" → "에프티유")
+    tts_pronunciation: Mapped[dict] = mapped_column(JSON, default=dict)
+    # (d) AICC-910 — STT phrase hint (도메인 키워드 인식률 보정). list[str] 기본, dict[str,float] (boost) 도 허용.
+    stt_keywords: Mapped[list] = mapped_column(JSON, default=list)
+    # (c) AICC-910 — dtmf_map 신규 스키마. {"1": {"type": "transfer_to_agent", "payload": "42"}}
+    dtmf_map: Mapped[dict] = mapped_column(JSON, default=dict)
+    # (a) AICC-910 — 인사말 중 사용자 끼어들기 허용 여부
+    greeting_barge_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    # (b) AICC-910 — 무응답 자동 종료 정책 (ms)
+    idle_prompt_ms: Mapped[int] = mapped_column(Integer, default=7000)
+    idle_terminate_ms: Mapped[int] = mapped_column(Integer, default=15000)
+    idle_prompt_text: Mapped[str] = mapped_column(String(500), default="여보세요?")
+    # (e) AICC-910 — TTS 발화 속도/피치
+    tts_speaking_rate: Mapped[float] = mapped_column(Float, default=1.0)
+    tts_pitch: Mapped[float] = mapped_column(Float, default=0.0)
     # 공통 규칙 (§4 첫 단계) — 매 turn LLM 호출 전 매칭 검사
     # [{pattern, action: 'handover'|'end_call'|'transfer_agent', reason, priority, target_bot_id?}]
     global_rules: Mapped[list[dict]] = mapped_column(JSON, default=list)
