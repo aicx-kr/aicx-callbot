@@ -25,7 +25,11 @@ from ...domain.ports import (
 
 class MockSTT(STTPort):
     async def transcribe(
-        self, audio_chunks: AsyncIterator[bytes], language: str, sample_rate: int
+        self,
+        audio_chunks: AsyncIterator[bytes],
+        language: str,
+        sample_rate: int,
+        keywords: list[str] | None = None,
     ) -> AsyncIterator[STTResult]:
         async for _ in audio_chunks:
             pass
@@ -34,7 +38,13 @@ class MockSTT(STTPort):
 
 class MockTTS(TTSPort):
     async def synthesize(
-        self, text: str, language: str, voice: str, sample_rate: int
+        self,
+        text: str,
+        language: str,
+        voice: str,
+        sample_rate: int,
+        speaking_rate: float = 1.0,
+        pitch: float = 0.0,
     ) -> AsyncIterator[bytes]:
         duration_ms = max(400, min(2000, len(text) * 80))
         total_samples = int(sample_rate * duration_ms / 1000)

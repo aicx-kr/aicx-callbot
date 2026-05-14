@@ -131,7 +131,15 @@ class CallbotAgentCreate(BaseModel):
     language: str = "ko-KR"
     llm_model: str = "gemini-3.1-flash-lite"
     pronunciation_dict: dict = {}
+    tts_pronunciation: dict = {}
+    stt_keywords: list = []
     dtmf_map: dict = {}
+    greeting_barge_in: bool = False
+    idle_prompt_ms: int = 7000
+    idle_terminate_ms: int = 15000
+    idle_prompt_text: str = "여보세요?"
+    tts_speaking_rate: float = 1.0
+    tts_pitch: float = 0.0
 
 
 class CallbotAgentUpdate(BaseModel):
@@ -141,7 +149,15 @@ class CallbotAgentUpdate(BaseModel):
     language: str | None = None
     llm_model: str | None = None
     pronunciation_dict: dict | None = None
+    tts_pronunciation: dict | None = None
+    stt_keywords: list | None = None
     dtmf_map: dict | None = None
+    greeting_barge_in: bool | None = None
+    idle_prompt_ms: int | None = None
+    idle_terminate_ms: int | None = None
+    idle_prompt_text: str | None = None
+    tts_speaking_rate: float | None = None
+    tts_pitch: float | None = None
 
 
 class CallbotAgentOut(_Base):
@@ -153,7 +169,15 @@ class CallbotAgentOut(_Base):
     language: str
     llm_model: str
     pronunciation_dict: dict
+    tts_pronunciation: dict = {}
+    stt_keywords: list = []
     dtmf_map: dict
+    greeting_barge_in: bool = False
+    idle_prompt_ms: int = 7000
+    idle_terminate_ms: int = 15000
+    idle_prompt_text: str = "여보세요?"
+    tts_speaking_rate: float = 1.0
+    tts_pitch: float = 0.0
     created_at: datetime
     updated_at: datetime
     memberships: list[CallbotMembershipOut] = []
