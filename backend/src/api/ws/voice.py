@@ -83,6 +83,12 @@ async def voice_ws(websocket: WebSocket, session_id: int):
             while True:
                 msg = await websocket.receive()
                 if msg["type"] == "websocket.disconnect":
+                    # WebSocketDisconnect 예외 경로와 동일하게 close 호출 — 종료 이벤트/
+                    # end_reason 기록이 누락되면 통화 메트릭에 client_disconnect 가 안 잡힌다.
+                    logger.event(
+                        "call.disconnected", session_id=sess_id, reason="client_disconnect"
+                    )
+                    await voice.close(reason="client_disconnect")
                     break
                 if "bytes" in msg and msg["bytes"] is not None:
                     await voice.on_audio(msg["bytes"])
