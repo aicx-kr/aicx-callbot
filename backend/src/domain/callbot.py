@@ -20,7 +20,13 @@ class DomainError(Exception):
 
 @dataclass(frozen=True)
 class CallbotMembership:
-    """CallbotAgent ↔ Bot 연결. role + 순서 + 분기 트리거 + voice override."""
+    """CallbotAgent ↔ Bot 연결. role + 순서 + 분기 트리거 + voice override.
+
+    silent_transfer:
+      - True  → 인계 시 안내 멘트 TTS 생략 (UX: 동일 페르소나로 자연스럽게 이어 받음)
+      - False → "네, {봇이름}로 안내해드릴게요." 같은 짧은 안내 발화 후 sub 봇 응답
+      AICC-908 결정: 기본 False — 사용자가 봇 전환을 인지하지 못하면 혼란.
+    """
 
     id: int | None
     bot_id: int
@@ -28,6 +34,7 @@ class CallbotMembership:
     order: int = 0
     branch_trigger: str = ""
     voice_override: str = ""
+    silent_transfer: bool = False
 
     def is_main(self) -> bool:
         return self.role is MembershipRole.MAIN

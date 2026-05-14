@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..db import Base
@@ -28,6 +28,9 @@ class CallbotMembership(Base):
     branch_trigger: Mapped[str] = mapped_column(Text, default="")
     # 비면 CallbotAgent.voice 상속, 채우면 이 sub만 다른 voice (외국어 분기 등)
     voice_override: Mapped[str] = mapped_column(String(64), default="")
+    # AICC-908 — 인계 시 안내 멘트 발화 여부. True면 짧은 인사 발화 skip 후 곧장 sub 봇 첫 응답.
+    # False(기본)면 짧은 안내 발화 후 sub 봇 응답 — 사용자가 전환을 인지하도록.
+    silent_transfer: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     callbot: Mapped["CallbotAgent"] = relationship("CallbotAgent", back_populates="memberships")
     bot: Mapped["Bot"] = relationship("Bot")

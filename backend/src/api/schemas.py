@@ -103,6 +103,7 @@ class CallbotMembershipOut(_Base):
     order: int
     branch_trigger: str
     voice_override: str
+    silent_transfer: bool = False
 
 
 class CallbotMembershipCreate(BaseModel):
@@ -111,6 +112,7 @@ class CallbotMembershipCreate(BaseModel):
     order: int = 0
     branch_trigger: str = ""
     voice_override: str = ""
+    silent_transfer: bool = False
 
 
 class CallbotMembershipUpdate(BaseModel):
@@ -118,6 +120,7 @@ class CallbotMembershipUpdate(BaseModel):
     order: int | None = None
     branch_trigger: str | None = None
     voice_override: str | None = None
+    silent_transfer: bool | None = None
 
 
 class CallbotAgentCreate(BaseModel):

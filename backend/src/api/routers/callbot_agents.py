@@ -42,6 +42,7 @@ def _membership_out(m, callbot_id: int) -> schemas.CallbotMembershipOut:
         "order": m.order,
         "branch_trigger": m.branch_trigger,
         "voice_override": m.voice_override,
+        "silent_transfer": bool(getattr(m, "silent_transfer", False)),
     })
 
 

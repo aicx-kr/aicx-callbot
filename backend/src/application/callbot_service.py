@@ -43,6 +43,7 @@ class CallbotAgentService:
     async def add_member(
         self, callbot_id: int, *, bot_id: int, role: str = "sub",
         order: int = 0, branch_trigger: str = "", voice_override: str = "",
+        silent_transfer: bool = False,
     ) -> CallbotMembership:
         agent = await self._repo.get(callbot_id)
         if agent is None:
@@ -50,6 +51,7 @@ class CallbotAgentService:
         member = CallbotMembership(
             id=None, bot_id=bot_id, role=MembershipRole(role),
             order=order, branch_trigger=branch_trigger, voice_override=voice_override,
+            silent_transfer=silent_transfer,
         )
         agent.add_member(member)  # invariant 강제: 중복 X, main 1개 X
         saved = await self._repo.save(agent)
@@ -60,6 +62,7 @@ class CallbotAgentService:
         self, callbot_id: int, member_id: int, *,
         role: str | None = None, order: int | None = None,
         branch_trigger: str | None = None, voice_override: str | None = None,
+        silent_transfer: bool | None = None,
     ) -> CallbotMembership:
         agent = await self._repo.get(callbot_id)
         if agent is None:
@@ -70,9 +73,14 @@ class CallbotAgentService:
         for i, m in enumerate(agent.memberships):
             if m.id == member_id:
                 updates = {}
-                if order is not None: updates["order"] = order
-                if branch_trigger is not None: updates["branch_trigger"] = branch_trigger
-                if voice_override is not None: updates["voice_override"] = voice_override
+                if order is not None:
+                    updates["order"] = order
+                if branch_trigger is not None:
+                    updates["branch_trigger"] = branch_trigger
+                if voice_override is not None:
+                    updates["voice_override"] = voice_override
+                if silent_transfer is not None:
+                    updates["silent_transfer"] = silent_transfer
                 if updates:
                     agent.memberships[i] = replace(m, **updates)
                 break
