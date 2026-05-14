@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
-from .api.routers import bots, callbot_agents, calls, knowledge, mcp_servers, skills, tenants, tools, transcripts
+from .api.routers import bots, callbot_agents, calls, knowledge, mcp_servers, skills, tags, tenants, tools, transcripts
 from .api.ws import voice
 from .infrastructure.db import SessionLocal
 from .infrastructure.seed import seed_if_empty
@@ -93,7 +93,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    for r in [tenants.router, callbot_agents.router, bots.router, skills.router, knowledge.router, tools.router, mcp_servers.router, calls.router, transcripts.router]:
+    for r in [tenants.router, callbot_agents.router, bots.router, skills.router, knowledge.router, tools.router, mcp_servers.router, calls.router, transcripts.router, tags.router]:
         app.include_router(r)
     app.include_router(voice.router)
 

@@ -13,6 +13,7 @@ from .callbot import CallbotAgent
 from .knowledge import Knowledge
 from .mcp_server import MCPServer
 from .skill import Skill
+from .tag import BotTagPolicy, CallTag, Tag
 from .tenant import Tenant
 from .tool import Tool
 
@@ -132,3 +133,71 @@ class CallbotAgentRepository(ABC):
     async def find_by_bot_id(self, bot_id: int) -> CallbotAgent | None:
         """봇이 속한 CallbotAgent. 통화 시 voice 일관 설정 조회용."""
         ...
+
+
+# ---------- AICC-912 통화 자동 태깅 ----------
+
+
+class TagRepository(ABC):
+    """Tag 마스터(태넌트별 태그 카탈로그) 영속화 포트."""
+
+    @abstractmethod
+    async def get(self, tag_id: int) -> Tag | None: ...
+
+    @abstractmethod
+    async def list(self, tenant_id: str, *, include_inactive: bool = False) -> list[Tag]: ...
+
+    @abstractmethod
+    async def list_by_ids(self, tag_ids: list[int]) -> list[Tag]: ...
+
+    @abstractmethod
+    async def find_by_name(self, tenant_id: str, name: str) -> Tag | None: ...
+
+    @abstractmethod
+    async def find_by_names(self, tenant_id: str, names: list[str]) -> list[Tag]: ...
+
+    @abstractmethod
+    async def save(self, tag: Tag) -> Tag: ...
+
+    @abstractmethod
+    async def delete(self, tag_id: int) -> None:
+        """soft delete — is_active=False. 이미 붙은 CallTag 는 유지."""
+        ...
+
+
+class CallTagRepository(ABC):
+    """CallSession ↔ Tag 다대다 연결 영속화 포트."""
+
+    @abstractmethod
+    async def list_by_call(self, call_session_id: int) -> list[CallTag]: ...
+
+    @abstractmethod
+    async def list_call_ids_by_tags(
+        self, bot_id: int, tag_ids: list[int], *, mode: str = "and"
+    ) -> list[int]:
+        """봇 내 통화 중 주어진 태그 셋과 매칭되는 call_session_id 목록.
+
+        mode="and" → 모든 태그를 가진 통화만 (기본 — AICC-912 §5 #3 결정)
+        mode="or"  → 하나라도 가진 통화 (후속 토글 — 현재 미사용)
+        """
+        ...
+
+    @abstractmethod
+    async def add(self, call_tag: CallTag) -> CallTag:
+        """idempotent — 이미 동일 (call_session_id, tag_id) 가 있으면 그것 반환."""
+        ...
+
+    @abstractmethod
+    async def remove(self, call_session_id: int, tag_id: int) -> None: ...
+
+
+class BotTagPolicyRepository(ABC):
+    """봇별 자동 태깅 허용 목록 영속화 포트."""
+
+    @abstractmethod
+    async def get(self, bot_id: int) -> BotTagPolicy:
+        """없으면 빈 정책 (allowed_tag_ids=[]) 을 반환 — 호출부 None 분기 제거."""
+        ...
+
+    @abstractmethod
+    async def save(self, policy: BotTagPolicy) -> BotTagPolicy: ...

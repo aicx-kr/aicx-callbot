@@ -5,9 +5,9 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import useSWR, { useSWRConfig } from 'swr';
 import clsx from 'clsx';
-import { Settings, Save, Trash2, FileText, GitBranch, AlertTriangle, Mic, Bot as BotIcon, BookOpen } from 'lucide-react';
+import { Settings, Save, Trash2, FileText, GitBranch, AlertTriangle, Mic, Bot as BotIcon, BookOpen, Tag as TagIcon } from 'lucide-react';
 import { api, fetcher } from '@/lib/api';
-import type { Bot } from '@/lib/types';
+import type { Bot, Tag, BotTagPolicy } from '@/lib/types';
 import { useToast } from '@/components/Toast';
 
 
@@ -144,6 +144,11 @@ export default function BotSettingsPage({ params }: { params: Promise<{ botId: s
 
       {/* 외부 RAG 토글은 사이드바 → 지식 페이지로 이동됨 (통합 관리) */}
 
+      {/* AICC-912 — 자동 태그 정책 */}
+      <Section title="자동 태그" subtitle="통화 종료 후 LLM 분석이 이 봇에 매길 수 있는 태그 목록입니다. 여기 등록된 태그만 자동 태깅됩니다 (허용 목록 제한 정책).">
+        <BotTagPolicyEditor botId={id} />
+      </Section>
+
       {/* 위험 영역 */}
       <Section title="위험 영역" tone="danger">
         <div className="flex items-center justify-between p-3 border border-rose-200 dark:border-rose-900/40 rounded-md bg-rose-50/50 dark:bg-rose-900/10">
@@ -204,6 +209,103 @@ function CallbotLinks({ botId }: { botId: number }) {
           </Link>
         );
       })}
+    </div>
+  );
+}
+
+function BotTagPolicyEditor({ botId }: { botId: number }) {
+  // AICC-912 — BotTagPolicy 편집 UI. 카탈로그에서 multi-select, 신규 태그 생성도 지원.
+  const { data: policy, mutate: mutatePolicy } = useSWR<BotTagPolicy>(`/api/bots/${botId}/tag-policy`, fetcher);
+  const { data: tags, mutate: mutateTags } = useSWR<Tag[]>(`/api/tags`, fetcher);
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newColor, setNewColor] = useState('');
+
+  const selected = new Set(policy?.allowed_tag_ids || []);
+  const active = (tags || []).filter((t) => t.is_active);
+
+  async function toggle(tagId: number) {
+    const next = new Set(selected);
+    if (next.has(tagId)) next.delete(tagId);
+    else next.add(tagId);
+    setSaving(true);
+    try {
+      await api.put(`/api/bots/${botId}/tag-policy`, { tag_ids: Array.from(next) });
+      await mutatePolicy();
+      toast('태그 정책 저장됨', 'success');
+    } catch (e) {
+      toast(`저장 실패: ${(e as Error).message}`, 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createTag() {
+    if (!newName.trim()) return;
+    try {
+      await api.post('/api/tags', { name: newName.trim(), color: newColor.trim() });
+      setNewName('');
+      setNewColor('');
+      await mutateTags();
+      toast('태그 추가됨', 'success');
+    } catch (e) {
+      toast(`태그 생성 실패: ${(e as Error).message}`, 'error');
+    }
+  }
+
+  return (
+    <div>
+      <div className="text-[11px] text-ink-400 dark:text-ink-500 mb-2 flex items-center gap-1.5">
+        <TagIcon className="w-3.5 h-3.5" />
+        등록된 태그가 없으면 자동 태깅이 비활성됩니다. 콘솔에서 명시적으로 풀을 정의하세요.
+      </div>
+      <div className="flex flex-wrap gap-1.5 mb-3 min-h-[2rem]">
+        {active.length === 0 && <span className="text-xs text-ink-400">등록된 태그가 없습니다. 아래에서 추가하세요.</span>}
+        {active.map((t) => {
+          const on = selected.has(t.id);
+          return (
+            <button
+              key={t.id}
+              disabled={saving}
+              onClick={() => toggle(t.id)}
+              className={clsx(
+                'inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border transition-colors',
+                on
+                  ? 'bg-violet-600 text-white border-violet-600'
+                  : 'bg-white dark:bg-ink-900 text-ink-700 dark:text-ink-200 border-ink-200 dark:border-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800',
+              )}
+              style={!on && t.color ? { borderColor: t.color } : undefined}
+            >
+              {!on && t.color && <span className="w-1.5 h-1.5 rounded-full" style={{ background: t.color }} />}
+              {t.name}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex gap-2 items-center pt-3 border-t border-ink-100 dark:border-ink-700">
+        <span className="text-[11px] uppercase font-semibold tracking-wider text-ink-500 dark:text-ink-400">신규 태그</span>
+        <input
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          placeholder="이름 (예: 환불문의)"
+          className="flex-1 text-sm px-2 py-1 border border-ink-200 dark:border-ink-700 rounded bg-white dark:bg-ink-800 dark:text-ink-100 outline-none focus:border-violet-400"
+        />
+        <input
+          value={newColor}
+          onChange={(e) => setNewColor(e.target.value)}
+          placeholder="#hex (선택)"
+          className="w-24 text-sm px-2 py-1 border border-ink-200 dark:border-ink-700 rounded bg-white dark:bg-ink-800 dark:text-ink-100 outline-none focus:border-violet-400"
+        />
+        <button
+          disabled={!newName.trim()}
+          onClick={createTag}
+          className="bg-violet-600 text-white text-xs font-semibold px-3 py-1 rounded hover:bg-violet-700 disabled:opacity-40"
+        >
+          추가
+        </button>
+      </div>
     </div>
   );
 }
