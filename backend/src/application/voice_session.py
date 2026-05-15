@@ -463,9 +463,12 @@ class VoiceSession:
         """idle 동안 callbot 의 idle_prompt_text 를 TTS 로 1회 발화.
 
         _speak 는 set_state("speaking") 을 호출 → set_state 가 idle 타이머를 cancel 한다.
-        prompt 발화 후 다시 idle 로 복귀 → 타이머 재시작 + 누적 시간 리셋 (재안내는 1회만이라
-        프롬프트 이후엔 prompt_emitted=True 라 다음 cycle 에서는 종료까지만 카운트).
-        주의: 발화 후 _last_activity_t 갱신 X — terminate 카운트는 첫 침묵부터 누적.
+        prompt 발화 후 idle 로 복귀할 때 set_state("idle") 을 부르면 _start_idle_timer 가
+        _idle_prompt_emitted=False / _last_activity_t=now 로 baseline 을 다 리셋해서
+        "prompt 1회 + 누적 silence 로 terminate" 룰이 깨진다 (prompt 가 반복되거나
+        terminate 카운트가 prompt 발화 시점부터 재시작).
+        따라서 set_state 를 우회하고 state 만 "idle" 로 되돌린 뒤 idle_task 만 재시작 —
+        _idle_prompt_emitted (=True) 와 _last_activity_t (=prompt 직전 누적 시각) 보존.
         """
         # callbot 의 voice/language 사용 (없으면 봇 기본)
         cb = self._callbot()
@@ -481,10 +484,13 @@ class VoiceSession:
         await self.send_json({"type": "transcript", "role": "assistant", "text": text})
         await self._save_transcript("assistant", text)
         await self._speak(text, voice, language)
-        # _speak 가 끝나면 set_state("speaking") → 호출자가 idle 로 복귀시킴.
-        # 여기서는 다시 idle 명시 — 발화 종료 후 다음 입력 대기.
-        if not self._closed:
-            await self.set_state("idle")
+        if self._closed:
+            return
+        # baseline 보존 idle 복귀 — _start_idle_timer 우회.
+        self.state.state = "idle"
+        await self.send_json({"type": "state", "value": "idle"})
+        self._cancel_idle_timer()
+        self.state.idle_task = asyncio.create_task(self._idle_loop())
 
     # ---------- (c) AICC-910 DTMF ----------
     async def on_dtmf(self, digit: str) -> None:
@@ -500,18 +506,25 @@ class VoiceSession:
         d = digit.strip()
         if d not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#"}:
             return
-        await self._tracer.start("dtmf_input", "span", input={"digit": d})  # fire-and-forget span
-        cb = self._callbot()
-        if cb is None:
-            return
-        mapping = cb.normalized_dtmf_map()
-        entry = mapping.get(d)
-        if not entry:
-            return
-        action = entry.get("type") or ""
-        payload = entry.get("payload") or ""
-        logger.event("call.dtmf", digit=d, action=action, payload_chars=len(payload))
-        await self._dispatch_dtmf(action, payload)
+        span_id, span_start = await self._tracer.start("dtmf_input", "span", input={"digit": d})
+        try:
+            cb = self._callbot()
+            if cb is None:
+                await self._tracer.end(span_id, span_start, meta={"matched": False, "reason": "no_callbot"})
+                return
+            mapping = cb.normalized_dtmf_map()
+            entry = mapping.get(d)
+            if not entry:
+                await self._tracer.end(span_id, span_start, meta={"matched": False, "reason": "unmapped"})
+                return
+            action = entry.get("type") or ""
+            payload = entry.get("payload") or ""
+            logger.event("call.dtmf", digit=d, action=action, payload_chars=len(payload))
+            await self._dispatch_dtmf(action, payload)
+            await self._tracer.end(span_id, span_start, meta={"matched": True, "action": action})
+        except Exception as e:
+            await self._tracer.end(span_id, span_start, error=str(e))
+            raise
 
     async def _dispatch_dtmf(self, action: str, payload: str) -> None:
         """4 action: transfer_to_agent / say / terminate / inject_intent."""
@@ -1446,6 +1459,9 @@ class VoiceSession:
             #   _build_history는 session_id 기반 DB 쿼리라 sub 봇에서도 동일 history 조회 가능.
             silent = await self._membership_silent_transfer(target_id)
             self.bot_id = target_bot_id
+            # bot_id 변경 후 CallbotAgent 캐시 리로드 — dtmf_map / idle / TTS rate·pitch /
+            # thinking_budget 등 봇별 설정이 stale 채로 남으면 인계 후에도 이전 봇 동작.
+            self._callbot_settings = await self._load_callbot_settings()
             self.state.active_skill = None
             self.state.auto_context = {}
             await self.send_json({
@@ -1608,6 +1624,9 @@ class VoiceSession:
             # AICC-908 — silent_transfer 멤버십 플래그 적용 (자세한 의미는 _execute_tool_for_loop 분기 참조)
             silent = await self._membership_silent_transfer(target_id)
             self.bot_id = target_bot_id
+            # bot_id 변경 후 CallbotAgent 캐시 리로드 — dtmf_map / idle / TTS rate·pitch /
+            # thinking_budget 등 봇별 설정이 stale 채로 남으면 인계 후에도 이전 봇 동작.
+            self._callbot_settings = await self._load_callbot_settings()
             self.state.active_skill = None
             self.state.auto_context = {}
             await self.send_json({

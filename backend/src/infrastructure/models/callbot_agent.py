@@ -33,10 +33,10 @@ class CallbotAgent(Base):
     llm_model: Mapped[str] = mapped_column(String(64), default="gemini-3.1-flash-lite")
     # (d) AICC-910 — pronunciation_dict 는 레거시 호환 유지. 신규 쓰기는 tts_pronunciation 으로.
     pronunciation_dict: Mapped[dict] = mapped_column(JSON, default=dict)
-    # (d) AICC-910 — TTS 텍스트 치환용 (예: "FTU" → "에프티유")
-    tts_pronunciation: Mapped[dict] = mapped_column(JSON, default=dict)
-    # (d) AICC-910 — STT phrase hint (도메인 키워드 인식률 보정). list[str] 기본, dict[str,float] (boost) 도 허용.
-    stt_keywords: Mapped[list] = mapped_column(JSON, default=list)
+    # (d) AICC-910 — TTS 텍스트 치환용 (예: "FTU" → "에프티유"). NOT NULL — 도메인 default {}.
+    tts_pronunciation: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # (d) AICC-910 — STT phrase hint (도메인 키워드 인식률 보정). list[str] 기본, dict[str,float] (boost) 도 허용. NOT NULL — 도메인 default [].
+    stt_keywords: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     # (c) AICC-910 — dtmf_map 신규 스키마. {"1": {"type": "transfer_to_agent", "payload": "42"}}
     dtmf_map: Mapped[dict] = mapped_column(JSON, default=dict)
     # (a) AICC-910 — 인사말 중 사용자 끼어들기 허용 여부

@@ -56,7 +56,9 @@ export function DTMFActionEditor({ data, onChange }: Props) {
     // 충돌 없는 새 키 — 그 시점에 비어 있는 첫 숫자.
     const used = new Set(Object.keys(data));
     const candidates = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#'];
-    const newKey = candidates.find((k) => !used.has(k)) ?? '';
+    const newKey = candidates.find((k) => !used.has(k));
+    // 모든 키 소진 시 빈 키 entry 가 추가되지 않도록 early return.
+    if (!newKey) return;
     onChange({ ...data, [newKey]: { type: 'say', payload: '' } });
   }
 

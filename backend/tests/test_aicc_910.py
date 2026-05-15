@@ -402,6 +402,68 @@ async def test_dtmf_inject_intent_routes_to_handle_user_final():
 
 
 @pytest.mark.asyncio
+async def test_dtmf_closes_tracer_span_on_match():
+    """CodeRabbit 지적: on_dtmf 가 tracer.start 만 부르고 end 안 부르던 트레이스 누수 수정."""
+    cb = CallbotAgent(
+        id=1, tenant_id=1, name="cb",
+        dtmf_map={"1": {"type": "say", "payload": "ok"}},
+    )
+    sess = _make_session(callbot=cb)
+    sess._speak = AsyncMock()  # type: ignore
+    sess._save_transcript = AsyncMock()  # type: ignore
+    sess.set_state = AsyncMock()  # type: ignore
+
+    await sess.on_dtmf("1")
+    sess._tracer.start.assert_awaited()
+    sess._tracer.end.assert_awaited()
+    end_kwargs = sess._tracer.end.call_args.kwargs
+    assert end_kwargs.get("meta", {}).get("action") == "say"
+
+
+@pytest.mark.asyncio
+async def test_dtmf_closes_tracer_span_when_unmapped():
+    """매핑 없는 digit 도 tracer.end 호출 — 누수 방지."""
+    cb = CallbotAgent(id=1, tenant_id=1, name="cb", dtmf_map={})
+    sess = _make_session(callbot=cb)
+    await sess.on_dtmf("5")
+    sess._tracer.end.assert_awaited()
+    end_kwargs = sess._tracer.end.call_args.kwargs
+    assert end_kwargs.get("meta", {}).get("matched") is False
+    assert end_kwargs.get("meta", {}).get("reason") == "unmapped"
+
+
+@pytest.mark.asyncio
+async def test_speak_idle_prompt_preserves_baseline():
+    """CodeRabbit 지적: prompt 발화 후 set_state("idle") 가 _start_idle_timer 를 통해
+    _idle_prompt_emitted / _last_activity_t 를 리셋해서 "1회 prompt + 누적 silence terminate"
+    룰이 깨지던 문제 수정. _speak_idle_prompt 가 set_state 를 우회하고 baseline 보존."""
+    cb = CallbotAgent(id=1, tenant_id=1, name="cb")
+    sess = _make_session(callbot=cb)
+    sess._speak = AsyncMock()  # type: ignore
+    sess._save_transcript = AsyncMock()  # type: ignore
+
+    baseline_t = time.monotonic() - 5.0  # 5초 전
+    sess._last_activity_t = baseline_t
+    sess._idle_prompt_emitted = True  # 이미 발화 1회 했음을 가정 (보존되어야)
+    sess.state.state = "thinking"  # _speak 이 set_state("speaking") 으로 바꿀 것
+
+    await sess._speak_idle_prompt("여보세요?")
+
+    # baseline 보존 확인
+    assert sess._idle_prompt_emitted is True, "prompt_emitted 가 리셋되면 prompt 반복 위험"
+    assert sess._last_activity_t == baseline_t, "last_activity_t 리셋되면 terminate 카운트 재시작"
+    # state 는 idle 로 복귀
+    assert sess.state.state == "idle"
+    # idle_task 가 재시작되었는지 (None 이 아닌 새 task)
+    assert sess.state.idle_task is not None
+    sess.state.idle_task.cancel()
+    try:
+        await sess.state.idle_task
+    except (asyncio.CancelledError, BaseException):
+        pass
+
+
+@pytest.mark.asyncio
 async def test_dtmf_transfer_to_agent_calls_tool_signal():
     cb = CallbotAgent(
         id=1, tenant_id=1, name="cb",
