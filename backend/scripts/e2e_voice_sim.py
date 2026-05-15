@@ -176,12 +176,22 @@ async def run_scenario(
             # 짧은 통화 — 즉시 end
             await asyncio.sleep(1.5)
         elif scenario == "text_only":
-            # 텍스트 모드: STT 우회, LLM 만 검증
+            # 텍스트 모드: STT 우회, LLM 만 검증. 인사말 대기 후 text 송신.
+            try:
+                await asyncio.wait_for(greeting_done.wait(), timeout=10.0)
+                await asyncio.sleep(0.3)
+            except asyncio.TimeoutError:
+                pass
             await ws.send(json.dumps({"type": "text", "text": "안녕하세요"}))
             await asyncio.sleep(min(timeout - 3, 8))
         elif scenario == "silent_transfer":
             # 환불 트리거 발화 → LLM 이 transfer_to_agent 도구 호출 기대.
-            # e2e seed 에서 sub bot 의 branch_trigger="환불" 로 설정.
+            # 인사말 끝나기 전에 text 송신하면 backend 가 speaking 상태에서 무시 가능 — 인사말 대기.
+            try:
+                await asyncio.wait_for(greeting_done.wait(), timeout=10.0)
+                await asyncio.sleep(0.3)
+            except asyncio.TimeoutError:
+                pass
             await ws.send(json.dumps({
                 "type": "text",
                 "text": "환불 처리해 주실 수 있나요? 환불 부탁드립니다.",
@@ -214,10 +224,24 @@ async def run_scenario(
                 pass
             await ws.send(json.dumps({"type": "dtmf", "digit": "0"}))
             await asyncio.sleep(min(timeout - 3, 4))
+        elif scenario == "dtmf_inject":
+            # DTMF "3" → seed dtmf_map 의 inject_intent → "보험 약관 알려줘" 가 LLM 입력으로 주입.
+            # LLM 이 KB 활용해 응답 → assistant transcript 추가.
+            try:
+                await asyncio.wait_for(greeting_done.wait(), timeout=10.0)
+                await asyncio.sleep(0.3)
+            except asyncio.TimeoutError:
+                pass
+            await ws.send(json.dumps({"type": "dtmf", "digit": "3"}))
+            await asyncio.sleep(min(timeout - 3, 12))
         elif scenario == "kb_question":
             # KB 키워드 발화 ("여행 보험 약관") → LLM 이 RAG context 활용 응답.
             # 비결정적: LLM 이 KB 내용 (24시간 / 영수증 / 5영업일) 단어를 응답에 포함하길 기대.
-            # verify 는 KB 내용 키워드 포함 여부 검증.
+            try:
+                await asyncio.wait_for(greeting_done.wait(), timeout=10.0)
+                await asyncio.sleep(0.3)
+            except asyncio.TimeoutError:
+                pass
             await ws.send(json.dumps({
                 "type": "text",
                 "text": "여행 보험 약관에 대해 알려주세요.",
@@ -263,7 +287,7 @@ async def run_scenario(
 async def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--bot-id", type=int, required=True)
-    p.add_argument("--scenario", required=True, choices=["basic", "barge_in", "end_call", "text_only", "silent_transfer", "idle_timeout", "dtmf", "dtmf_terminate", "kb_question"])
+    p.add_argument("--scenario", required=True, choices=["basic", "barge_in", "end_call", "text_only", "silent_transfer", "idle_timeout", "dtmf", "dtmf_terminate", "dtmf_inject", "kb_question"])
     p.add_argument("--wav", default=None, help="fixture 이름 (확장자 제외)")
     p.add_argument("--backend", default="http://127.0.0.1:8765")
     p.add_argument("--timeout", type=float, default=30.0)

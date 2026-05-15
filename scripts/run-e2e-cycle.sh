@@ -145,6 +145,13 @@ uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario dtmf_t
       --label "dtmf_terminate" \
       --expect-end-reason bot_terminate || VOICE_EXIT=1
 
+# 6.10 dtmf_inject — DTMF "3" → inject_intent 액션이 LLM 컨텍스트에 user 메시지 주입 → 응답
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario dtmf_inject --timeout 20 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "dtmf_inject" \
+      --expect-assistant-text \
+      --expect-traces turn,llm || VOICE_EXIT=1
+
 # 6.9 kb_question — KB 문서 키워드 질문 → LLM 이 KB 내용 활용 응답
 uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario kb_question --timeout 20 \
   | uv run python scripts/e2e_voice_verify.py \

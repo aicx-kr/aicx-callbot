@@ -138,6 +138,8 @@ async def seed() -> dict:
             dtmf_map={
                 "1": {"type": "say", "payload": "1번 안내입니다"},
                 "0": {"type": "terminate", "payload": "bot_terminate"},
+                # inject_intent: payload 를 user 발화로 LLM 에 주입 → 응답 받음.
+                "3": {"type": "inject_intent", "payload": "보험 약관 알려줘"},
             },
         )
         db.add(callbot)
