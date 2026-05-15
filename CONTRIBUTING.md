@@ -99,9 +99,15 @@ domain (가장 안쪽 — 비즈니스 규칙)
 
 ## 데이터베이스 마이그레이션 (Alembic)
 
+### Revision ID 명명 규칙
+
+- **32자 이내** — Postgres 의 `alembic_version.version_num` 이 VARCHAR(32) 기본값. 초과 시 `UPDATE alembic_version` 에서 `StringDataRightTruncationError: value too long for type character varying(32)` 로 stamp 실패. transactional DDL 이라 마이그레이션 전체 rollback → 배포 startup 차단.
+- 패턴: `<NNNN>_<ticket>_<short_label>` (예: `0005_aicc909`, `0006_aicc910_voice`) — 14~20자 권장
+- 길이 사고 사례: `0006_aicc910_callbot_voice_fields` (33자) — 2026-05-16 dev 배포 startup fail, revision id 짧게 변경하여 hot-fix
+
 ### 절대 금지
 
-- ❌ **머지된 마이그레이션 파일의 `revision = "..."` ID 변경** — dev/prod DB의 `alembic_version` 테이블이 그 ID 를 기록하고 있어, 이름을 바꾸면 다음 배포에서 `Can't locate revision identified by '...'` 로 부팅 실패. 파일명 (`0003_xxx.py`) 만 cosmetic 으로 바꾸는 것도 위험 — `revision = "..."` 이 진짜 ID.
+- ❌ **머지된 마이그레이션 파일의 `revision = "..."` ID 변경** — dev/prod DB의 `alembic_version` 테이블이 그 ID 를 기록하고 있어, 이름을 바꾸면 다음 배포에서 `Can't locate revision identified by '...'` 로 부팅 실패. 파일명 (`0003_xxx.py`) 만 cosmetic 으로 바꾸는 것도 위험 — `revision = "..."` 이 진짜 ID. (예외: stamp 가 truncate 로 한 번도 성공한 적 없는 상태면 변경 안전 — 위 길이 사고 fix 가 이 케이스)
 - ❌ **머지된 파일의 `down_revision` 변경** — chain 끊김 → 같은 증상.
 
 ### 머지 전(feature branch)에는 자유
