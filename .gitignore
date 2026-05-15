@@ -56,3 +56,4 @@ docs/plans/.vox-snapshots/
 .coverage
 htmlcov/
 coverage/
+backend/tests/e2e_fixtures/

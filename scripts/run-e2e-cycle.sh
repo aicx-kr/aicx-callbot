@@ -85,11 +85,38 @@ for i in $(seq 1 90); do
 done
 
 # 5. Playwright
-echo "[5/6] Playwright 실행"
+echo "[5/7] Playwright UI"
 export E2E_BASE_URL="http://127.0.0.1:3000"
 export E2E_SEED_FILE="$SEED_OUT"
 pnpm exec playwright test || PW_EXIT=$?
 
-# 6. 정리
-echo "[6/6] 완료 — 결과는 frontend/e2e/.results/ 확인"
-exit "${PW_EXIT:-0}"
+# 6. Voice 시나리오 (WS 시뮬레이션)
+echo "[6/7] Voice 시나리오"
+cd "$BACKEND_DIR"
+MAIN_BOT_ID=$(uv run python -c "import json; print(json.load(open('$SEED_OUT'))['main_bot_id'])")
+
+VOICE_EXIT=0
+
+# 6.1 basic — refund.wav 발화 → STT → LLM → TTS round trip
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario basic --wav refund --timeout 35 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "basic(refund)" \
+      --expect-user-text --expect-assistant-text \
+      --expect-traces stt,llm,tts || VOICE_EXIT=1
+
+# 6.2 text_only — STT 우회, LLM 응답만 검증
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario text_only --timeout 20 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "text_only" \
+      --expect-assistant-text \
+      --expect-traces turn,llm || VOICE_EXIT=1
+
+# 6.3 end_call — 짧은 통화 종료 시퀀스
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario end_call --timeout 15 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "end_call" \
+      --expect-end-reason normal || VOICE_EXIT=1
+
+# 7. 정리
+echo "[7/7] 완료 — Playwright=${PW_EXIT:-0}, Voice=$VOICE_EXIT"
+exit "$(( ${PW_EXIT:-0} + VOICE_EXIT ))"
