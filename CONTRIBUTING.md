@@ -97,6 +97,26 @@ domain (가장 안쪽 — 비즈니스 규칙)
 
 ---
 
+## 데이터베이스 마이그레이션 (Alembic)
+
+### 절대 금지
+
+- ❌ **머지된 마이그레이션 파일의 `revision = "..."` ID 변경** — dev/prod DB의 `alembic_version` 테이블이 그 ID 를 기록하고 있어, 이름을 바꾸면 다음 배포에서 `Can't locate revision identified by '...'` 로 부팅 실패. 파일명 (`0003_xxx.py`) 만 cosmetic 으로 바꾸는 것도 위험 — `revision = "..."` 이 진짜 ID.
+- ❌ **머지된 파일의 `down_revision` 변경** — chain 끊김 → 같은 증상.
+
+### 머지 전(feature branch)에는 자유
+
+- 로컬·feature branch 에서 revision id rename, chain 재정렬 모두 OK
+- main 머지되는 순간 그 ID 는 영구 — 이후 chain conflict 가 생기면 **옛 파일은 그대로 두고 새 마이그레이션을 위에 쌓는다**
+
+### Chain conflict (multiple heads) 났을 때
+
+- 둘 다 머지 전이면: 늦게 만든 쪽의 `down_revision` 을 먼저 머지될 쪽 ID 로 바꾸면 linear
+- 한 쪽 이미 머지됐으면: **머지된 ID 를 건드리지 말고**, 새 PR 의 `down_revision` 을 머지된 head 로 맞춤
+- 그래도 꼭 rename 해야 한다면: 배포 전 DB 의 `alembic_version` 도 `UPDATE alembic_version SET version_num='새ID' WHERE version_num='옛ID'` 같이 직접 stamp 필요 (운영 위험)
+
+---
+
 ## 검증
 
 코드 수정 후 최소 다음 통과:
