@@ -295,6 +295,7 @@ class VoiceSession:
                 "transfer_to_agent",
                 {"target_bot_id": matched.target_bot_id, "reason": matched.reason or matched.pattern},
                 runtime=None, turn_id=None,
+                via="global_rule",
             )
             if not self._closed:
                 await self.set_state("idle")
@@ -342,11 +343,14 @@ class VoiceSession:
 
     # ---------- AICC-908 — 인계 시 bot_id 동기 ----------
     def _switch_bot(self, new_bot_id: int) -> None:
-        """transfer_to_agent 시 self.bot_id + ContextVar(_bot_id_ctx) 동시 갱신.
+        """transfer_to_agent 시 self.bot_id + ContextVar(_bot_id_ctx) + var_ctx.system["bot_id"]
+        를 함께 갱신.
 
         ws_call_context 가 통화 시작 시 main bot_id 로 토큰을 1회 set 한다. 인계가 일어나면
         self.bot_id 만 바꾸고 ContextVar 를 갱신하지 않으면 이후 logger.event 가 stale 한
         main bot_id 로 라벨링된다 — Slack alert / JSON 로그 / 통화 흐름 재구성 모두 어긋남.
+        var_ctx.system["bot_id"] 도 start() 에서 1회만 set 되므로, sub 봇의 system_prompt
+        에서 `{{bot_id}}` 를 쓰면 stale 한 main bot_id 로 resolve 됨 → 세 곳 동시 갱신.
         이전 인계 토큰이 있으면 reset 후 새로 set (LIFO 보장 — ws_call_context 의 outer
         token 보다 위에만 self 토큰이 쌓이도록).
         """
@@ -359,6 +363,10 @@ class VoiceSession:
             self._bot_id_token = None
         self.bot_id = int(new_bot_id)
         self._bot_id_token = set_bot_id(str(new_bot_id))
+        # 템플릿 치환용 system 변수도 동기 — {{bot_id}} 사용처가 prompt/SMS body 등에 있을 수
+        # 있고 콘솔 자유 입력이라 잠재 silent corruption 회피.
+        if hasattr(self, "state") and getattr(self.state, "var_ctx", None) is not None:
+            self.state.var_ctx.set_system("bot_id", str(new_bot_id))
 
     # ---------- AICC-910 — CallbotAgent 설정 캐시 ----------
     async def _load_callbot_settings(self) -> "callbot_module.CallbotAgent | None":
@@ -565,6 +573,7 @@ class VoiceSession:
                 "transfer_to_agent",
                 {"target_bot_id": target, "reason": "dtmf"},
                 runtime=None, turn_id=None,
+                via="dtmf",
             )
             if not self._closed:
                 await self.set_state("idle")
@@ -1647,9 +1656,15 @@ class VoiceSession:
             return result.result, False
         return {"error": result.error or "unknown_error"}, False
 
-    # ---------- 레거시 _handle_tool_signal — global_rule transfer_to_agent에서만 호출 ----------
+    # ---------- 레거시 _handle_tool_signal — global_rule + DTMF transfer_to_agent 진입점 ----------
 
-    async def _handle_tool_signal(self, tool_name: str, args: dict, runtime, turn_id: int | None = None) -> None:
+    async def _handle_tool_signal(
+        self, tool_name: str, args: dict, runtime, turn_id: int | None = None,
+        *, via: str = "global_rule",
+    ) -> None:
+        """transfer_to_agent 등의 builtin 시그널 핸들러. via 는 logger.event 라벨링용
+        (예: "global_rule" / "dtmf"). 호출처가 명시 안 하면 기본 "global_rule".
+        """
         # builtin 단축 처리 (DB에 없어도 동작하도록)
         if tool_name in ("end_call",):
             await self._record_tool_invocation(tool_name, args, result={"signal": "end_call"})
@@ -1691,7 +1706,7 @@ class VoiceSession:
                 target_name=target_name,
                 reason=reason or None,
                 silent=silent,
-                via="global_rule",
+                via=via,
             )
             await self.send_json({
                 "type": "transfer_to_agent", "target_bot_id": target_id,

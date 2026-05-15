@@ -486,13 +486,14 @@ async def test_dtmf_transfer_to_agent_calls_tool_signal():
     )
     sess = _make_session(callbot=cb)
     calls: list[tuple] = []
-    async def fake_handle_tool_signal(name, args, runtime, turn_id):
-        calls.append((name, args))
+    async def fake_handle_tool_signal(name, args, runtime, turn_id, *, via="global_rule"):
+        calls.append((name, args, via))
     sess._handle_tool_signal = fake_handle_tool_signal  # type: ignore
     sess.set_state = AsyncMock()  # type: ignore
 
     await sess.on_dtmf("2")
-    assert calls == [("transfer_to_agent", {"target_bot_id": 42, "reason": "dtmf"})]
+    # DTMF 발 transfer 는 via="dtmf" 로 라벨링 — global_rule 과 구분.
+    assert calls == [("transfer_to_agent", {"target_bot_id": 42, "reason": "dtmf"}, "dtmf")]
 
 
 @pytest.mark.asyncio
@@ -724,17 +725,22 @@ def test_build_config_thinking_unsupported_sdk_silently_skips():
 # ---------- AICC-908/909 — _switch_bot ContextVar 동기 ----------
 
 def test_switch_bot_updates_contextvar():
-    """_switch_bot 호출 시 ContextVar(_bot_id_ctx) 가 새 값으로 갱신."""
+    """_switch_bot 호출 시 ContextVar(_bot_id_ctx) + var_ctx.system["bot_id"] 가 새 값으로 갱신."""
     from src.core.logging.context import get_bot_id, reset_bot_id, set_bot_id
 
     # 통화 진입 모사 — outer 토큰을 main bot 으로 1회 set (ws_call_context 흉내)
     outer_token = set_bot_id("1")
     try:
         sess = _make_session()
+        # start() 에서 set_system 하는 것 모사 — main bot_id="1"
+        sess.state.var_ctx.set_system("bot_id", "1")
         assert get_bot_id() == "1"
+        assert sess.state.var_ctx.get("bot_id") == "1"
         sess._switch_bot(42)
         assert sess.bot_id == 42
         assert get_bot_id() == "42"
+        # var_ctx 도 동기 — {{bot_id}} 템플릿이 sub 봇 id 로 resolve
+        assert sess.state.var_ctx.get("bot_id") == "42"
         # self 토큰이 보관됐는지
         assert sess._bot_id_token is not None
     finally:
@@ -743,6 +749,21 @@ def test_switch_bot_updates_contextvar():
             reset_bot_id(sess._bot_id_token)
             sess._bot_id_token = None
         reset_bot_id(outer_token)
+
+
+def test_handle_tool_signal_accepts_via_kwarg():
+    """_handle_tool_signal 시그니처에 via keyword-only 파라미터 존재 — DTMF/global_rule 구분용.
+
+    구현 디테일이지만, DTMF 발 transfer 가 logger.event 에서 잘못된 via 로 라벨링되지 않으려면
+    호출처에서 via 를 명시할 수 있어야 한다.
+    """
+    import inspect
+
+    sig = inspect.signature(VoiceSession._handle_tool_signal)
+    params = sig.parameters
+    assert "via" in params, "_handle_tool_signal 에 via 파라미터 누락"
+    assert params["via"].default == "global_rule"
+    assert params["via"].kind == inspect.Parameter.KEYWORD_ONLY
 
 
 def test_switch_bot_chain_replaces_previous_token():
