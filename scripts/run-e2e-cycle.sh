@@ -46,9 +46,11 @@ uv run uvicorn main:app --host 127.0.0.1 --port 8765 --no-access-log \
   >"$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 
+BACKEND_READY=0
 for i in $(seq 1 60); do
   if curl -sf http://127.0.0.1:8765/api/health >/dev/null 2>&1; then
     echo "       backend ready (~${i}s)"
+    BACKEND_READY=1
     break
   fi
   if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
@@ -58,6 +60,11 @@ for i in $(seq 1 60); do
   fi
   sleep 1
 done
+if [[ $BACKEND_READY -eq 0 ]]; then
+  echo "       backend 60s 안에 ready 안 됨. 로그 확인: $BACKEND_LOG"
+  tail -30 "$BACKEND_LOG"
+  exit 1
+fi
 
 # 3. e2e tenant 시드
 echo "[3/6] e2e seed (callbot-e2e-test tenant 생성)"
@@ -71,9 +78,11 @@ export NEXT_PUBLIC_BACKEND_URL="http://127.0.0.1:8765"
 pnpm dev >"$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
 
+FRONTEND_READY=0
 for i in $(seq 1 90); do
   if curl -sf http://127.0.0.1:3000 >/dev/null 2>&1; then
     echo "       frontend ready (~${i}s)"
+    FRONTEND_READY=1
     break
   fi
   if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
@@ -83,6 +92,11 @@ for i in $(seq 1 90); do
   fi
   sleep 1
 done
+if [[ $FRONTEND_READY -eq 0 ]]; then
+  echo "       frontend 90s 안에 ready 안 됨. 로그 확인: $FRONTEND_LOG"
+  tail -30 "$FRONTEND_LOG"
+  exit 1
+fi
 
 # 5. Playwright
 echo "[5/7] Playwright UI"
@@ -168,6 +182,9 @@ uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario barge_
       --label "barge_in" \
       --expect-user-text || VOICE_EXIT=1
 
-# 7. 정리
+# 7. 정리. exit code: 산술 합치면 wraparound (>255) 위험 — boolean OR.
 echo "[7/7] 완료 — Playwright=${PW_EXIT:-0}, Voice=$VOICE_EXIT"
-exit "$(( ${PW_EXIT:-0} + VOICE_EXIT ))"
+if [[ "${PW_EXIT:-0}" -ne 0 || "$VOICE_EXIT" -ne 0 ]]; then
+  exit 1
+fi
+exit 0

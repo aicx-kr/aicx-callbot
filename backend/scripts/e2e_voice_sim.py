@@ -261,13 +261,19 @@ async def run_scenario(
         except asyncio.TimeoutError:
             recv_task.cancel()
 
-    # post_call task 가 traces commit 마치는 시간
-    await asyncio.sleep(1.0)
-
-    # 3) traces 조회
+    # 3) traces 조회 — post_call task 가 commit 완료할 때까지 폴링 (고정 sleep 대신).
+    # traces 가 비어있을 수도 있는 시나리오 (end_call 등) 대비 max 3s.
+    traces: list = []
     async with httpx.AsyncClient(timeout=10.0) as http:
-        r = await http.get(f"{backend}/api/calls/{session_id}/traces")
-        traces = r.json() if r.status_code == 200 else []
+        for _ in range(15):  # 0.2s * 15 = max 3s
+            r = await http.get(f"{backend}/api/calls/{session_id}/traces")
+            if r.status_code == 200:
+                got = r.json() if isinstance(r.json(), list) else []
+                if got:
+                    traces = got
+                    break
+                traces = got  # 빈 리스트도 보존
+            await asyncio.sleep(0.2)
 
     # 4) 결과
     return {
