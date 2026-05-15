@@ -105,7 +105,7 @@ export function DTMFActionEditor({ data, onChange }: Props) {
         onClick={add}
         className="flex items-center gap-1 text-sm text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/30 px-3 py-1.5 rounded mt-1"
       >
-        <Plus className="w-3.5 h-3.5" /> + DTMF 매핑 추가
+        <Plus className="w-3.5 h-3.5" /> DTMF 매핑 추가
       </button>
     </div>
   );
