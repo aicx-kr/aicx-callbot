@@ -21,8 +21,12 @@ dtmf_map 스키마 변경 ({"1": "텍스트"} → {"1": {"type":..., "payload":.
 도메인의 `CallbotAgent.normalized_dtmf_map()` 가 read 시 정규화하므로 Alembic 단계에서는
 컬럼 변경 없음. UI/API 는 신규 형태로 read/write 한다.
 
-Revision ID: 0006_aicc910_callbot_voice_fields
+Revision ID: 0006_aicc910_voice
 Revises: 0005_aicc909
+
+Note: revision id 가 32자 초과(0006_aicc910_callbot_voice_fields = 33자)면
+Postgres alembic_version.version_num VARCHAR(32) 에 잘려서 stamp 가 실패한다.
+0001~0005 와 동일한 짧은 패턴 사용.
 Create Date: 2026-05-15 00:00:00.000000
 
 """
@@ -32,7 +36,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0006_aicc910_callbot_voice_fields"
+revision: str = "0006_aicc910_voice"
 down_revision: Union[str, Sequence[str], None] = "0005_aicc909"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
