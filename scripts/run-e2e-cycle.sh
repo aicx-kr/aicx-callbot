@@ -117,12 +117,22 @@ uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario end_ca
       --label "end_call" \
       --expect-end-reason normal || VOICE_EXIT=1
 
-# 6.4 silent_transfer — "환불" 트리거 → LLM 이 transfer_to_agent 호출하길 기대
+# 6.4 silent_transfer — "환불" 트리거 → LLM 이 transfer_to_agent 호출. transfer 이벤트 검증.
 uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario silent_transfer --timeout 25 \
   | uv run python scripts/e2e_voice_verify.py \
       --label "silent_transfer" \
       --expect-assistant-text \
-      --expect-traces turn,llm || VOICE_EXIT=1
+      --expect-traces turn,llm \
+      --expect-transfer || VOICE_EXIT=1
+
+# 6.5 barge_in — 인사말 발화 중 사용자 PCM 송신 → 적어도 STT 까지는 도달.
+# 봇 발화 cancel 자체는 sim buffer 차이로 자동 검증 어려움 (실 브라우저는 audio buffer 페이싱 자연,
+# sim 은 즉시 받아 봇 발화 짧게 인식). 실 cancel 흐름은 test_aicc_910.py 의 barge_in unit test 5개가
+# 직접 검증하므로 e2e 사이클은 "사용자 PCM 이 STT 까지 라우팅됐다" 까지만 회귀 가드.
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario barge_in --wav greeting --timeout 20 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "barge_in" \
+      --expect-user-text || VOICE_EXIT=1
 
 # 7. 정리
 echo "[7/7] 완료 — Playwright=${PW_EXIT:-0}, Voice=$VOICE_EXIT"

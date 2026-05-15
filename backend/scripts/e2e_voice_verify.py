@@ -27,6 +27,7 @@ def main() -> None:
     p.add_argument("--expect-assistant-text", action="store_true")
     p.add_argument("--expect-traces", default="", help="콤마 구분 kinds (예: stt,llm,tts)")
     p.add_argument("--expect-transfer", action="store_true")
+    p.add_argument("--expect-event", default=None, help="WS 이벤트 type 1+개 (예: barge_in)")
     p.add_argument("--expect-end-reason", default=None)
     p.add_argument("--label", default="voice")
     args = p.parse_args()
@@ -64,6 +65,13 @@ def main() -> None:
         transfers = [e for e in events if e.get("type") == "transfer_to_agent"]
         if not transfers:
             failures.append("transfer_to_agent 이벤트 0개")
+
+    if args.expect_event:
+        events = d.get("events", [])
+        matches = [e for e in events if e.get("type") == args.expect_event]
+        if not matches:
+            event_types = sorted({e.get("type") for e in events if e.get("type")})
+            failures.append(f"이벤트 {args.expect_event!r} 0개 (있는 type: {event_types})")
 
     if args.expect_end_reason:
         events = d.get("events", [])

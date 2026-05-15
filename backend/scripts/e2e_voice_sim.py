@@ -153,8 +153,23 @@ async def run_scenario(
         elif scenario == "barge_in":
             assert wav, "scenario=barge_in 은 --wav 필요"
             pcm = load_wav_pcm(wav)
-            # 봇이 인사말 중일 때 바로 PCM 송신 — barge-in 유도
-            await asyncio.sleep(0.1)
+            # 봇이 정말 발화 중일 때 PCM 송신해야 barge-in 가드(speaking + speech_task) 통과.
+            # state=speaking 만으론 부족 — TTS 합성 시작 전에 PCM 보내면 speech_task 가 아직 합성 단계라
+            # speech_task.cancel() 가 작동 안 함. 첫 _tts_chunk 가 도착할 때까지 대기 (실 봇 발화 시작).
+            # 단, 2초 안에 첫 chunk 안 오면 fallback (인사말 없는 봇).
+            async def wait_first_tts_chunk():
+                while True:
+                    for ev in events[-10:]:
+                        if ev.get("type") == "_tts_chunk":
+                            return
+                    await asyncio.sleep(0.05)
+
+            try:
+                # 첫 chunk 받자마자 즉시 PCM 송신 — 봇 발화 중간 보장.
+                # 대기를 두면 backend 의 인사말 송출이 더 진행되어 timing 갭 발생.
+                await asyncio.wait_for(wait_first_tts_chunk(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
             await stream_pcm(ws, pcm)
             await asyncio.sleep(min(timeout - 3, 8))
         elif scenario == "end_call":

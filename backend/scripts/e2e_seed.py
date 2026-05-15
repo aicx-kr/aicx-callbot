@@ -66,7 +66,8 @@ async def seed() -> dict:
             tenant_id=tenant.id,
             name="e2e-main",
             persona="E2E 테스트용 메인 봇",
-            system_prompt="당신은 친절한 안내 봇입니다. {{bot_id}} 봇 식별자.",
+            # system_prompt 는 sub bot id 확보 후 아래에서 업데이트.
+            system_prompt="(placeholder)",
             greeting="안녕하세요, E2E 테스트입니다.",
             language="ko-KR",
             voice="ko-KR-Neural2-A",
@@ -86,6 +87,14 @@ async def seed() -> dict:
         )
         db.add_all([main_bot, sub_bot])
         await db.flush()
+
+        # sub_bot.id 확보 후 main_bot system_prompt 업데이트 — LLM 이 환불 의도 시
+        # transfer_to_agent 도구를 정확한 target_bot_id 로 호출하도록 안내.
+        main_bot.system_prompt = (
+            "당신은 친절한 안내 봇입니다 ({{bot_id}}).\n"
+            f"환불 관련 문의가 들어오면 즉시 transfer_to_agent 도구를 호출해서 "
+            f"target_bot_id={sub_bot.id} 에 인계하세요. 다른 답변은 하지 마세요."
+        )
 
         skill = models.Skill(
             bot_id=main_bot.id,
@@ -110,10 +119,14 @@ async def seed() -> dict:
             tenant_id=tenant.id,
             name="e2e-callbot",
             voice="ko-KR-Neural2-A",
-            greeting="E2E 콜봇 인사",
+            # barge_in 시나리오용 — 인사말이 길어야 sim 이 PCM 송신 시 봇이 아직 발화 중.
+            greeting=(
+                "안녕하세요. E2E 자동 테스트 콜봇입니다. "
+                "지금부터 자동화 검증을 시작합니다. 무엇을 도와드릴까요?"
+            ),
             language="ko-KR",
             llm_model="gemini-2.5-flash",
-            greeting_barge_in=False,
+            greeting_barge_in=True,  # e2e: barge_in 시나리오 검증을 위해 활성
             idle_prompt_ms=7000,
             idle_terminate_ms=15000,
             idle_prompt_text="여보세요?",
