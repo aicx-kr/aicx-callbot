@@ -2012,7 +2012,6 @@ class VoiceSession:
 
     async def _speak(self, text: str, voice: str, language: str) -> None:
         import time as _time
-        await self.set_state("speaking")
         self.state.last_speak_start_t = _time.monotonic()
 
         # (d) AICC-910 — TTS 텍스트 치환 (tts_pronunciation)
@@ -2042,7 +2041,12 @@ class VoiceSession:
                 logger.exception("TTS error", error_type=type(e).__name__)
                 await self.send_json({"type": "error", "where": "tts", "message": str(e)})
 
+        # race 방지: speech_task 를 set_state("speaking") 보다 먼저 할당.
+        # 순서가 거꾸로면 set_state 의 await(send_json) 사이에 사용자 PCM 이 도착해
+        # _on_speech_start 가 speech_task=None 으로 보고 barge-in cancel 분기를 놓침.
+        # 발견 경로: e2e_voice_sim.py 의 barge_in 시나리오, 2026-05-15.
         self.state.speech_task = asyncio.create_task(speak_task())
+        await self.set_state("speaking")
         try:
             await self.state.speech_task
         except asyncio.CancelledError:
