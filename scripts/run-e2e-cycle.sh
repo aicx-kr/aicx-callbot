@@ -117,6 +117,13 @@ uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario end_ca
       --label "end_call" \
       --expect-end-reason normal || VOICE_EXIT=1
 
+# 6.4 silent_transfer — "환불" 트리거 → LLM 이 transfer_to_agent 호출하길 기대
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario silent_transfer --timeout 25 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "silent_transfer" \
+      --expect-assistant-text \
+      --expect-traces turn,llm || VOICE_EXIT=1
+
 # 7. 정리
 echo "[7/7] 완료 — Playwright=${PW_EXIT:-0}, Voice=$VOICE_EXIT"
 exit "$(( ${PW_EXIT:-0} + VOICE_EXIT ))"

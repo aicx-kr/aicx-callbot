@@ -164,6 +164,14 @@ async def run_scenario(
             # 텍스트 모드: STT 우회, LLM 만 검증
             await ws.send(json.dumps({"type": "text", "text": "안녕하세요"}))
             await asyncio.sleep(min(timeout - 3, 8))
+        elif scenario == "silent_transfer":
+            # 환불 트리거 발화 → LLM 이 transfer_to_agent 도구 호출 기대.
+            # e2e seed 에서 sub bot 의 branch_trigger="환불" 로 설정.
+            await ws.send(json.dumps({
+                "type": "text",
+                "text": "환불 처리해 주실 수 있나요? 환불 부탁드립니다.",
+            }))
+            await asyncio.sleep(min(timeout - 3, 12))
         else:
             raise ValueError(f"unknown scenario: {scenario}")
 
@@ -204,7 +212,7 @@ async def run_scenario(
 async def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--bot-id", type=int, required=True)
-    p.add_argument("--scenario", required=True, choices=["basic", "barge_in", "end_call", "text_only"])
+    p.add_argument("--scenario", required=True, choices=["basic", "barge_in", "end_call", "text_only", "silent_transfer"])
     p.add_argument("--wav", default=None, help="fixture 이름 (확장자 제외)")
     p.add_argument("--backend", default="http://127.0.0.1:8765")
     p.add_argument("--timeout", type=float, default=30.0)
