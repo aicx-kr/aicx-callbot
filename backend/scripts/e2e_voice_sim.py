@@ -86,26 +86,6 @@ async def run_scenario(
     ws_url = backend.replace("http://", "ws://").replace("https://", "wss://")
     ws_uri = f"{ws_url}/ws/calls/{session_id}"
 
-    async def recv_loop(ws):
-        try:
-            async for msg in ws:
-                if isinstance(msg, (bytes, bytearray)):
-                    # TTS 오디오 — 분석 안 하고 카운트만
-                    events.append({"type": "_tts_chunk", "bytes": len(msg)})
-                    continue
-                try:
-                    obj = json.loads(msg)
-                except json.JSONDecodeError:
-                    continue
-                events.append(obj)
-                if obj.get("type") == "transcript":
-                    transcripts.append({
-                        "role": obj.get("role"),
-                        "text": obj.get("text", ""),
-                    })
-        except websockets.ConnectionClosed:
-            pass
-
     # 인사말 완료(speaking → idle 전이) 감지용
     greeting_done = asyncio.Event()
 
