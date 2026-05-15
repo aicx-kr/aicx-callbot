@@ -54,6 +54,7 @@ export default function CallbotAgentPage({ params }: { params: Promise<{ id: str
         idle_prompt_text: form.idle_prompt_text,
         tts_speaking_rate: form.tts_speaking_rate,
         tts_pitch: form.tts_pitch,
+        llm_thinking_budget: form.llm_thinking_budget,
       });
       await mutate();
       setDirty(false);
@@ -342,6 +343,17 @@ export default function CallbotAgentPage({ params }: { params: Promise<{ id: str
           </div>
         </Section>
 
+        {/* AICC-910 (f2) — LLM thinking budget */}
+        <Section
+          title="LLM thinking budget"
+          subtitle="Gemini 2.5+ 의 추론 토큰 예산. Off 가 가장 빠르지만 복잡한 판단은 정확도 손해."
+        >
+          <ThinkingBudgetControl
+            value={form.llm_thinking_budget ?? null}
+            onChange={(v) => set('llm_thinking_budget', v)}
+          />
+        </Section>
+
         {/* AICC-910 (d) — 발음사전 분리: TTS 치환 */}
         <Section title="TTS 발음 치환" subtitle='TTS 가 어색하게 읽는 약어·고유명사 교정. 예: "MRT" → "엠알티".'>
           <KVEditor
@@ -426,6 +438,55 @@ function KeywordsEditor({ data, onChange }: { data: string[]; onChange: (next: s
       <button onClick={add} className="flex items-center gap-1 text-sm text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/30 px-3 py-1.5 rounded mt-1">
         <Plus className="w-3.5 h-3.5" /> + 키워드 추가
       </button>
+    </div>
+  );
+}
+
+function ThinkingBudgetControl({
+  value,
+  onChange,
+}: {
+  value: number | null;
+  onChange: (next: number | null) => void;
+}) {
+  const mode = value === null ? 'default' : value === 0 ? 'off' : value === -1 ? 'dynamic' : 'custom';
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <Field label="모드">
+        <select
+          value={mode}
+          onChange={(e) => {
+            switch (e.target.value) {
+              case 'default': onChange(null); break;
+              case 'off': onChange(0); break;
+              case 'dynamic': onChange(-1); break;
+              case 'custom': onChange(typeof value === 'number' && value > 0 ? value : 1024); break;
+            }
+          }}
+          className={inputCls}
+        >
+          <option value="default">기본 (모델 자동, 권장)</option>
+          <option value="off">Off (TTFF 최소)</option>
+          <option value="dynamic">Dynamic (명시)</option>
+          <option value="custom">사용자 지정 (토큰 한도)</option>
+        </select>
+      </Field>
+      {mode === 'custom' && (
+        <Field label="토큰 한도">
+          <input
+            type="number"
+            min={1}
+            max={32768}
+            step={128}
+            value={value ?? 1024}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              onChange(Number.isFinite(n) && n > 0 ? n : 1);
+            }}
+            className={inputCls}
+          />
+        </Field>
+      )}
     </div>
   );
 }

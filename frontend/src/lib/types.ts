@@ -59,6 +59,9 @@ export interface CallbotAgent {
   tts_speaking_rate: number;
   /** AICC-910 (e) — TTS 피치 (-20.0~20.0 semitones). */
   tts_pitch: number;
+  /** AICC-910 (f2) — Gemini ThinkingConfig.thinking_budget.
+   *  null = SDK 기본(dynamic). 0 = off (TTFF 단축). -1 = dynamic 명시. N>0 = 토큰 한도. */
+  llm_thinking_budget: number | null;
   created_at: string;
   updated_at: string;
   memberships: CallbotMembership[];

@@ -140,6 +140,7 @@ class CallbotAgentCreate(BaseModel):
     idle_prompt_text: str = "여보세요?"
     tts_speaking_rate: float = 1.0
     tts_pitch: float = 0.0
+    llm_thinking_budget: int | None = None
 
 
 class CallbotAgentUpdate(BaseModel):
@@ -158,6 +159,7 @@ class CallbotAgentUpdate(BaseModel):
     idle_prompt_text: str | None = None
     tts_speaking_rate: float | None = None
     tts_pitch: float | None = None
+    llm_thinking_budget: int | None = None
 
 
 class CallbotAgentOut(_Base):
@@ -178,6 +180,7 @@ class CallbotAgentOut(_Base):
     idle_prompt_text: str = "여보세요?"
     tts_speaking_rate: float = 1.0
     tts_pitch: float = 0.0
+    llm_thinking_budget: int | None = None
     created_at: datetime
     updated_at: datetime
     memberships: list[CallbotMembershipOut] = []

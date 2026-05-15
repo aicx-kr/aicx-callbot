@@ -33,6 +33,7 @@ def _to_domain(row: models.CallbotAgent) -> CallbotAgent:
         idle_prompt_text=row.idle_prompt_text or "여보세요?",
         tts_speaking_rate=float(row.tts_speaking_rate if row.tts_speaking_rate is not None else 1.0),
         tts_pitch=float(row.tts_pitch if row.tts_pitch is not None else 0.0),
+        llm_thinking_budget=row.llm_thinking_budget,
         memberships=[
             CallbotMembership(
                 id=m.id,
@@ -91,6 +92,7 @@ class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
                 idle_prompt_text=agent.idle_prompt_text,
                 tts_speaking_rate=agent.normalized_speaking_rate(),
                 tts_pitch=agent.normalized_pitch(),
+                llm_thinking_budget=agent.normalized_thinking_budget(),
             )
             self._db.add(row)
             await self._db.flush()
@@ -113,6 +115,7 @@ class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
             row.idle_prompt_text = agent.idle_prompt_text
             row.tts_speaking_rate = agent.normalized_speaking_rate()
             row.tts_pitch = agent.normalized_pitch()
+            row.llm_thinking_budget = agent.normalized_thinking_budget()
 
         # memberships 동기화: id로 매칭, 신규는 추가, 사라진 것은 제거, 기존은 업데이트
         existing_by_id = {m.id: m for m in row.memberships if m.id is not None}

@@ -8,6 +8,8 @@
   - stt_keywords (JSON)                 — (d) STT phrase hint (도메인 키워드 인식률 보정)
   - tts_speaking_rate (Float)           — (e) 발화 속도 0.5~2.0
   - tts_pitch (Float)                   — (e) 피치 -20.0~20.0 semitones
+  - llm_thinking_budget (Integer NULL)  — (f2) Gemini ThinkingConfig.thinking_budget
+                                          NULL=SDK 기본(dynamic), 0=off, -1=dynamic, N>0=토큰 한도
 
 데이터 이전:
   - 기존 pronunciation_dict (단일 통합) → tts_pronunciation 으로 복사. pronunciation_dict
@@ -45,6 +47,8 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("stt_keywords", sa.JSON(), nullable=True))
         batch_op.add_column(sa.Column("tts_speaking_rate", sa.Float(), nullable=False, server_default="1.0"))
         batch_op.add_column(sa.Column("tts_pitch", sa.Float(), nullable=False, server_default="0.0"))
+        # (f2) NULL 허용 — SDK 기본(dynamic)에 위임하는 봇은 NULL 로 둔다.
+        batch_op.add_column(sa.Column("llm_thinking_budget", sa.Integer(), nullable=True))
 
     # 기존 pronunciation_dict 가 비어 있지 않은 경우 tts_pronunciation 으로 복사.
     # SQLite + Postgres 모두 호환: JSON 컬럼간 단순 대입.
@@ -61,6 +65,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     with op.batch_alter_table("callbot_agents") as batch_op:
+        batch_op.drop_column("llm_thinking_budget")
         batch_op.drop_column("tts_pitch")
         batch_op.drop_column("tts_speaking_rate")
         batch_op.drop_column("stt_keywords")

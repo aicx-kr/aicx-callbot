@@ -65,6 +65,37 @@ def test_callbot_agent_tts_defaults_and_clamp():
     assert cb.normalized_pitch() == -20.0
 
 
+def test_callbot_agent_thinking_budget_default_none():
+    """기본값 None — SDK 기본(=dynamic) 위임."""
+    cb = CallbotAgent(id=1, tenant_id=1, name="cb")
+    assert cb.llm_thinking_budget is None
+    assert cb.normalized_thinking_budget() is None
+
+
+def test_callbot_agent_thinking_budget_off_and_dynamic_preserved():
+    """0 (off) / -1 (dynamic) 는 그대로 유지."""
+    cb = CallbotAgent(id=1, tenant_id=1, name="cb", llm_thinking_budget=0)
+    assert cb.normalized_thinking_budget() == 0
+    cb.llm_thinking_budget = -1
+    assert cb.normalized_thinking_budget() == -1
+
+
+def test_callbot_agent_thinking_budget_positive_clamped():
+    """양수 토큰 한도는 32768 로 clamp."""
+    cb = CallbotAgent(id=1, tenant_id=1, name="cb", llm_thinking_budget=1024)
+    assert cb.normalized_thinking_budget() == 1024
+    cb.llm_thinking_budget = 100000
+    assert cb.normalized_thinking_budget() == 32768
+
+
+def test_callbot_agent_thinking_budget_invalid_falls_back_to_none():
+    """음수(-1 제외) / 잘못된 타입 / 파싱 실패는 None 으로 폴백."""
+    cb = CallbotAgent(id=1, tenant_id=1, name="cb", llm_thinking_budget=-99)
+    assert cb.normalized_thinking_budget() is None
+    cb.llm_thinking_budget = "abc"  # type: ignore[assignment]
+    assert cb.normalized_thinking_budget() is None
+
+
 def test_callbot_agent_stt_keywords_dict_to_list():
     """dict 형태 (boost map) → keys list. list 형태 그대로. 그 외 빈 list."""
     cb = CallbotAgent(id=1, tenant_id=1, name="cb")
@@ -470,3 +501,74 @@ async def test_google_tts_first_chunk_le_subsequent_average():
     if len(chunks) > 1:
         avg_rest = sum(chunks[1:]) / (len(chunks) - 1)
         assert first <= avg_rest, f"first={first}, avg_rest={avg_rest}"
+
+
+# ============================================================
+# (f2 옵션화) GeminiLLM._build_config 의 thinking_budget 분기
+# ============================================================
+
+class _FakeThinkingCfg:
+    def __init__(self, thinking_budget: int) -> None:
+        self.thinking_budget = thinking_budget
+
+
+class _FakeGenCfg:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class _FakeTypes:
+    """google.genai.types 의 최소 stub — ThinkingConfig + GenerateContentConfig 만."""
+    ThinkingConfig = _FakeThinkingCfg
+    GenerateContentConfig = _FakeGenCfg
+
+
+class _FakeTypesNoThinking:
+    """ThinkingConfig 미노출 (구버전 SDK / flash-lite) 시뮬레이션."""
+    GenerateContentConfig = _FakeGenCfg
+
+
+def _make_gemini_with_types(types_module):
+    from src.infrastructure.adapters.gemini_llm import GeminiLLM
+
+    inst = GeminiLLM.__new__(GeminiLLM)
+    inst._client = None  # type: ignore[attr-defined]
+    inst._types = types_module  # type: ignore[attr-defined]
+    return inst
+
+
+def test_build_config_none_skips_thinking():
+    """thinking_budget=None → ThinkingConfig 안 붙음 (SDK 기본 위임)."""
+    llm = _make_gemini_with_types(_FakeTypes)
+    cfg = llm._build_config(system_prompt="hi", tools=None, thinking_budget=None)
+    assert "thinking_config" not in cfg.kwargs
+
+
+def test_build_config_zero_attaches_thinking_off():
+    """thinking_budget=0 → ThinkingConfig(thinking_budget=0) 부착."""
+    llm = _make_gemini_with_types(_FakeTypes)
+    cfg = llm._build_config(system_prompt="hi", tools=None, thinking_budget=0)
+    tc = cfg.kwargs.get("thinking_config")
+    assert isinstance(tc, _FakeThinkingCfg)
+    assert tc.thinking_budget == 0
+
+
+def test_build_config_positive_token_limit_passed_through():
+    llm = _make_gemini_with_types(_FakeTypes)
+    cfg = llm._build_config(system_prompt="hi", tools=None, thinking_budget=2048)
+    tc = cfg.kwargs.get("thinking_config")
+    assert tc.thinking_budget == 2048
+
+
+def test_build_config_dynamic_minus_one_passed_through():
+    llm = _make_gemini_with_types(_FakeTypes)
+    cfg = llm._build_config(system_prompt="hi", tools=None, thinking_budget=-1)
+    tc = cfg.kwargs.get("thinking_config")
+    assert tc.thinking_budget == -1
+
+
+def test_build_config_thinking_unsupported_sdk_silently_skips():
+    """ThinkingConfig 가 SDK 에 없으면 — 값이 들어와도 silently skip (다른 옵션은 정상)."""
+    llm = _make_gemini_with_types(_FakeTypesNoThinking)
+    cfg = llm._build_config(system_prompt="hi", tools=None, thinking_budget=0)
+    assert "thinking_config" not in cfg.kwargs

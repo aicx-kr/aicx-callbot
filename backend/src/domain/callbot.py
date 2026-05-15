@@ -59,6 +59,8 @@ class CallbotAgent:
     - dtmf_map (c): {digit: {"type": <action>, "payload": str}} 형태로 스키마 변경 — read 시 normalize
     - tts_speaking_rate (e): TTS 발화 속도 (0.5~2.0)
     - tts_pitch (e): TTS 피치 (-20.0~20.0 semitones)
+    - llm_thinking_budget (f2): Gemini ThinkingConfig.thinking_budget
+        None=SDK 기본(=dynamic), 0=off, -1=dynamic 명시, 양수 N=토큰 한도
     """
 
     id: int | None
@@ -83,6 +85,9 @@ class CallbotAgent:
     # (e) TTS 발화 속도/피치
     tts_speaking_rate: float = 1.0
     tts_pitch: float = 0.0
+    # (f2) Gemini ThinkingConfig.thinking_budget. None = SDK 기본 (= dynamic).
+    # 0 = off (TTFF 단축), -1 = dynamic 명시, 양수 N = 토큰 한도.
+    llm_thinking_budget: int | None = None
     memberships: list[CallbotMembership] = field(default_factory=list)
 
     # ---------- 정규화 helpers (도메인 규칙 강제) ----------
@@ -104,6 +109,29 @@ class CallbotAgent:
             return self._clamp(float(self.tts_pitch), -20.0, 20.0)
         except (TypeError, ValueError):
             return 0.0
+
+    def normalized_thinking_budget(self) -> int | None:
+        """Gemini ThinkingConfig.thinking_budget 정규화.
+
+        반환:
+          - None: SDK 기본값에 위임 (ThinkingConfig 자체를 안 붙임)
+          - 0:    thinking off (TTFF 단축)
+          - -1:   dynamic 명시
+          - N>0:  토큰 한도. 비정상적으로 큰 값(>32768)은 clamp.
+        파싱 실패 / 음수(-1 제외) 은 None 으로 폴백.
+        """
+        v = self.llm_thinking_budget
+        if v is None:
+            return None
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        if n == 0 or n == -1:
+            return n
+        if n > 0:
+            return min(n, 32768)
+        return None
 
     def normalized_stt_keywords(self) -> list[str]:
         """STT speech_contexts phrases 로 넘길 string list. dict 형태도 키만 추출."""

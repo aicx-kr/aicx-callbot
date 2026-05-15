@@ -69,6 +69,7 @@ class MockLLM(LLMPort):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse:
         return LLMResponse(
             text=f"네, '{user_text}' 관련해서 도와드릴게요. (mock 응답)",
@@ -85,6 +86,7 @@ class MockLLM(LLMPort):
         tool_result: object,
         model: str,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse:
         return LLMResponse(
             text=f"도구 '{tool_name}' 결과를 받았습니다. (mock followup)",
@@ -99,6 +101,7 @@ class MockLLM(LLMPort):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> AsyncIterator[LLMResponse]:
         # 2개 문장으로 쪼개 yield (실 stream 테스트용)
         yield LLMResponse(text=f"네, '{user_text}' 관련해서 도와드릴게요.", tool_call=None, raw_model_content=None)

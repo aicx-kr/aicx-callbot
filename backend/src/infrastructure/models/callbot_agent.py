@@ -48,6 +48,9 @@ class CallbotAgent(Base):
     # (e) AICC-910 — TTS 발화 속도/피치
     tts_speaking_rate: Mapped[float] = mapped_column(Float, default=1.0)
     tts_pitch: Mapped[float] = mapped_column(Float, default=0.0)
+    # (f2) AICC-910 — Gemini ThinkingConfig.thinking_budget. NULL = SDK 기본(=dynamic).
+    # 0 = off, -1 = dynamic 명시, 양수 N = 토큰 한도.
+    llm_thinking_budget: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     # 공통 규칙 (§4 첫 단계) — 매 turn LLM 호출 전 매칭 검사
     # [{pattern, action: 'handover'|'end_call'|'transfer_agent', reason, priority, target_bot_id?}]
     global_rules: Mapped[list[dict]] = mapped_column(JSON, default=list)

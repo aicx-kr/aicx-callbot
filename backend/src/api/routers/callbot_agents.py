@@ -35,6 +35,7 @@ def _to_out(agent) -> schemas.CallbotAgentOut:
         "idle_prompt_text": agent.idle_prompt_text,
         "tts_speaking_rate": agent.normalized_speaking_rate(),
         "tts_pitch": agent.normalized_pitch(),
+        "llm_thinking_budget": agent.normalized_thinking_budget(),
         "created_at": __import__("datetime").datetime.utcnow(),  # placeholder — DB row 직접 노출이 아니라 도메인 객체라 created_at 없음
         "updated_at": __import__("datetime").datetime.utcnow(),
         "memberships": [_membership_out(m, agent.id) for m in agent.memberships],

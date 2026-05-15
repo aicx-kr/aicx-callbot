@@ -108,6 +108,7 @@ class LLMPort(ABC):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse: ...
 
     @abstractmethod
@@ -120,6 +121,7 @@ class LLMPort(ABC):
         tool_result: object,
         model: str,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse:
         """이전 generate의 tool_call에 대한 결과를 주입하고 다음 응답을 받는다.
 
@@ -136,6 +138,7 @@ class LLMPort(ABC):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> AsyncIterator[LLMResponse]:
         """generate의 streaming 변형 — 문장 단위로 LLMResponse를 yield.
 

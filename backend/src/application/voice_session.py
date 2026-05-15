@@ -367,6 +367,10 @@ class VoiceSession:
             return 1.0, 0.0
         return cb.normalized_speaking_rate(), cb.normalized_pitch()
 
+    def _thinking_budget(self) -> int | None:
+        cb = self._callbot()
+        return cb.normalized_thinking_budget() if cb is not None else None
+
     def _tts_apply_pronunciation(self, text: str) -> str:
         """CallbotAgent.tts_pronunciation 의 단순 substring 치환.
 
@@ -1109,6 +1113,7 @@ class VoiceSession:
         stream_iter = self.llm.stream(
             system_prompt=system_prompt, user_text=user_text, model=runtime.llm_model,
             history=history, tools=tool_specs,
+            thinking_budget=self._thinking_budget(),
         )
         try:
             try:
@@ -1341,6 +1346,7 @@ class VoiceSession:
             response = await self.llm.generate(
                 system_prompt=system_prompt, user_text=user_text, model=model,
                 history=history, tools=tools,
+                thinking_budget=self._thinking_budget(),
             )
             await self._tracer.end(
                 llm_id, llm_start,
@@ -1371,6 +1377,7 @@ class VoiceSession:
                 system_prompt=system_prompt, history=history,
                 prior_model_content=prior_model_content,
                 tool_name=tool_name, tool_result=tool_result, model=model, tools=tools,
+                thinking_budget=self._thinking_budget(),
             )
             await self._tracer.end(
                 llm_id, llm_start,
@@ -1674,6 +1681,7 @@ class VoiceSession:
                     user_text=followup_user,
                     model=runtime.llm_model,
                     history=followup_history,
+                    thinking_budget=self._thinking_budget(),
                 )
                 await self._tracer.end(llm2_id, llm2_start, output=followup, meta={"model": runtime.llm_model})
                 body2, _ = parse_signal_and_strip(followup)
@@ -1789,6 +1797,7 @@ class VoiceSession:
                     user_text=followup_user,
                     model=runtime.llm_model,
                     history=followup_history,
+                    thinking_budget=self._thinking_budget(),
                 )
                 await self._tracer.end(llm2_id, llm2_start, output=followup, meta={"model": runtime.llm_model})
                 body2, _ = parse_signal_and_strip(followup)
