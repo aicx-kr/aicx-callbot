@@ -231,6 +231,76 @@ async def test_greeting_barge_in_enabled_cancels():
     assert fake_task.cancelled() or fake_task.done()
 
 
+@pytest.mark.asyncio
+async def test_barge_in_emits_ws_event_with_elapsed_ms():
+    """barge-in cancel 시 send_json({type:'barge_in', ...}) emit. elapsed_ms 포함."""
+    sess = _make_session()
+    sess.state.state = "speaking"
+    sess.state.in_greeting = False
+    # 봇 발화 시작 시각을 200ms 전으로 가상 세팅
+    sess.state.last_speak_start_t = time.monotonic() - 0.2
+    fake_task = asyncio.create_task(asyncio.sleep(1.0))
+    sess.state.speech_task = fake_task
+
+    await sess._on_speech_start()
+
+    # send_json 호출 중 barge_in 메시지가 있는지
+    barge_calls = [
+        c.args[0] for c in sess.send_json.call_args_list
+        if c.args and isinstance(c.args[0], dict) and c.args[0].get("type") == "barge_in"
+    ]
+    assert len(barge_calls) == 1
+    payload = barge_calls[0]
+    assert payload["in_greeting"] is False
+    assert payload["elapsed_ms"] is not None
+    assert 100 <= payload["elapsed_ms"] <= 500  # ~200ms 예상, 여유 있게
+
+
+@pytest.mark.asyncio
+async def test_barge_in_in_greeting_payload_when_allowed():
+    """greeting_barge_in=True + in_greeting=True → barge_in event 에 in_greeting=True 표시."""
+    cb = CallbotAgent(id=1, tenant_id=1, name="cb", greeting_barge_in=True)
+    sess = _make_session(callbot=cb)
+    sess.state.state = "speaking"
+    sess.state.in_greeting = True
+    fake_task = asyncio.create_task(asyncio.sleep(1.0))
+    sess.state.speech_task = fake_task
+
+    await sess._on_speech_start()
+
+    barge_calls = [
+        c.args[0] for c in sess.send_json.call_args_list
+        if c.args and isinstance(c.args[0], dict) and c.args[0].get("type") == "barge_in"
+    ]
+    assert len(barge_calls) == 1
+    assert barge_calls[0]["in_greeting"] is True
+
+
+@pytest.mark.asyncio
+async def test_barge_in_blocked_emits_no_event():
+    """greeting_barge_in=False (가드) + in_greeting=True → cancel skip + barge_in event 도 안 옴."""
+    cb = CallbotAgent(id=1, tenant_id=1, name="cb", greeting_barge_in=False)
+    sess = _make_session(callbot=cb)
+    sess.state.state = "speaking"
+    sess.state.in_greeting = True
+    fake_task = asyncio.create_task(asyncio.sleep(1.0))
+    sess.state.speech_task = fake_task
+
+    try:
+        await sess._on_speech_start()
+        barge_calls = [
+            c.args[0] for c in sess.send_json.call_args_list
+            if c.args and isinstance(c.args[0], dict) and c.args[0].get("type") == "barge_in"
+        ]
+        assert barge_calls == []
+    finally:
+        fake_task.cancel()
+        try:
+            await fake_task
+        except (asyncio.CancelledError, BaseException):
+            pass
+
+
 # ---------- (b) Idle timeout ----------
 
 @pytest.mark.asyncio

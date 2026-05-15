@@ -13,6 +13,7 @@
         | {"type":"transcript","role":"user|assistant","text":"...","is_final":bool}
         | {"type":"skill","name":"..."}
         | {"type":"handover"}
+        | {"type":"barge_in","in_greeting":bool,"elapsed_ms":int|None}  # 봇 발화 중단
         | {"type":"error","where":"...","message":"..."}
         | {"type":"end","reason":"..."}
 """

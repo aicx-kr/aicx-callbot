@@ -187,6 +187,8 @@ class _SessionState:
     # Echo grace — 봇 발화 종료 직후 짧은 시간(_ECHO_GRACE_S) 동안 새로 들어온 speech_start는
     # 봇 자기 발화 잔향(echo)으로 간주하고 무시. barge-in (speaking 중 끼어들기)은 그대로 작동.
     last_speak_end_t: float = 0.0
+    # 봇 발화 시작 시각 — barge-in 시 elapsed_since_speak_start_ms 계산용.
+    last_speak_start_t: float = 0.0
     # (a) AICC-910 — 인사말 발화 중 표식. greeting_barge_in=False 면 _on_speech_start 가 cancel 스킵.
     in_greeting: bool = False
     # (b) AICC-910 — 무응답 자동 종료 타이머 task. idle 진입 시 시작, listening/thinking/speaking
@@ -673,6 +675,21 @@ class VoiceSession:
                 return
         # barge-in: 봇이 말하는 중이면 즉시 중단 (TTS speech_task + STT 이전 task 둘 다 정리)
         if self.state.state == "speaking" and self.state.speech_task:
+            import time as _time
+            elapsed_ms: int | None = None
+            if self.state.last_speak_start_t > 0:
+                elapsed_ms = int((_time.monotonic() - self.state.last_speak_start_t) * 1000)
+            in_greeting = bool(self.state.in_greeting)
+            logger.event(
+                "call.barge_in",
+                in_greeting=in_greeting,
+                elapsed_since_speak_start_ms=elapsed_ms,
+            )
+            await self.send_json({
+                "type": "barge_in",
+                "in_greeting": in_greeting,
+                "elapsed_ms": elapsed_ms,
+            })
             self.state.speech_task.cancel()
         # 이전 turn 의 STT task 가 살아 있으면 정리 — 새 audio_q 로 교체하므로 그대로 두면 leak.
         if self._stt_task and not self._stt_task.done():
@@ -1898,6 +1915,7 @@ class VoiceSession:
     async def _speak(self, text: str, voice: str, language: str) -> None:
         import time as _time
         await self.set_state("speaking")
+        self.state.last_speak_start_t = _time.monotonic()
 
         # (d) AICC-910 — TTS 텍스트 치환 (tts_pronunciation)
         text_to_speak = self._tts_apply_pronunciation(text)
