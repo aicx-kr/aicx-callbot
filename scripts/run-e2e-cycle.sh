@@ -97,10 +97,12 @@ MAIN_BOT_ID=$(uv run python -c "import json; print(json.load(open('$SEED_OUT'))[
 
 VOICE_EXIT=0
 
-# 6.1 basic — refund.wav 발화 → STT → LLM → TTS round trip
-uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario basic --wav refund --timeout 35 \
+# 6.1 basic — greeting.wav("안녕하세요") 발화 → STT → 일반 LLM → TTS round trip.
+# refund.wav 는 LLM 이 transfer_to_agent 도구 호출 분기로 가 TTS span 미기록 가능 — silent_transfer
+# 시나리오로 분리. basic 은 가장 단순한 round trip 검증.
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario basic --wav greeting --timeout 35 \
   | uv run python scripts/e2e_voice_verify.py \
-      --label "basic(refund)" \
+      --label "basic(greeting)" \
       --expect-user-text --expect-assistant-text \
       --expect-traces stt,llm,tts || VOICE_EXIT=1
 
@@ -124,6 +126,18 @@ uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario silent
       --expect-assistant-text \
       --expect-traces turn,llm \
       --expect-transfer || VOICE_EXIT=1
+
+# 6.6 idle_timeout — 침묵 유지 → call.idle_timeout 후 end reason=idle_timeout 기대
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario idle_timeout --timeout 15 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "idle_timeout" \
+      --expect-end-reason idle_timeout || VOICE_EXIT=1
+
+# 6.7 dtmf — DTMF "1" 송신 → dtmf_map say 액션으로 봇이 "1번 안내입니다" 발화
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario dtmf --timeout 15 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "dtmf" \
+      --expect-assistant-text || VOICE_EXIT=1
 
 # 6.5 barge_in — 인사말 발화 중 사용자 PCM 송신 → 적어도 STT 까지는 도달.
 # 봇 발화 cancel 자체는 sim buffer 차이로 자동 검증 어려움 (실 브라우저는 audio buffer 페이싱 자연,

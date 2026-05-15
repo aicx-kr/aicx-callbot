@@ -127,9 +127,15 @@ async def seed() -> dict:
             language="ko-KR",
             llm_model="gemini-2.5-flash",
             greeting_barge_in=True,  # e2e: barge_in 시나리오 검증을 위해 활성
-            idle_prompt_ms=7000,
-            idle_terminate_ms=15000,
+            # e2e: idle_timeout 시나리오 사이클 시간 단축. 다른 시나리오는 5초 안에 응답 도착하므로 영향 X.
+            idle_prompt_ms=2000,
+            idle_terminate_ms=5000,
             idle_prompt_text="여보세요?",
+            # e2e: DTMF 시나리오 검증용 매핑.
+            dtmf_map={
+                "1": {"type": "say", "payload": "1번 안내입니다"},
+                "0": {"type": "terminate", "payload": ""},
+            },
         )
         db.add(callbot)
         await db.flush()
