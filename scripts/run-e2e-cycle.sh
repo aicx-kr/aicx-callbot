@@ -139,6 +139,19 @@ uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario dtmf -
       --label "dtmf" \
       --expect-assistant-text || VOICE_EXIT=1
 
+# 6.8 dtmf_terminate — DTMF "0" → 통화 즉시 종료 (end_reason=bot_terminate)
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario dtmf_terminate --timeout 10 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "dtmf_terminate" \
+      --expect-end-reason bot_terminate || VOICE_EXIT=1
+
+# 6.9 kb_question — KB 문서 키워드 질문 → LLM 이 KB 내용 활용 응답
+uv run python scripts/e2e_voice_sim.py --bot-id "$MAIN_BOT_ID" --scenario kb_question --timeout 20 \
+  | uv run python scripts/e2e_voice_verify.py \
+      --label "kb_question" \
+      --expect-assistant-text \
+      --expect-text-contains "24시간,영수증,5영업일" || VOICE_EXIT=1
+
 # 6.5 barge_in — 인사말 발화 중 사용자 PCM 송신 → 적어도 STT 까지는 도달.
 # 봇 발화 cancel 자체는 sim buffer 차이로 자동 검증 어려움 (실 브라우저는 audio buffer 페이싱 자연,
 # sim 은 즉시 받아 봇 발화 짧게 인식). 실 cancel 흐름은 test_aicc_910.py 의 barge_in unit test 5개가

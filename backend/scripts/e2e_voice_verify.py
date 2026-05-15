@@ -29,6 +29,7 @@ def main() -> None:
     p.add_argument("--expect-transfer", action="store_true")
     p.add_argument("--expect-event", default=None, help="WS 이벤트 type 1+개 (예: barge_in)")
     p.add_argument("--expect-end-reason", default=None)
+    p.add_argument("--expect-text-contains", default=None, help="assistant transcript 중 1개 이상에 포함될 키워드 (콤마 OR)")
     p.add_argument("--label", default="voice")
     args = p.parse_args()
 
@@ -80,6 +81,13 @@ def main() -> None:
             failures.append("end 이벤트 없음")
         elif end_evt.get("reason") != args.expect_end_reason:
             failures.append(f"end reason={end_evt.get('reason')} (기대: {args.expect_end_reason})")
+
+    if args.expect_text_contains:
+        keywords = [k.strip() for k in args.expect_text_contains.split(",") if k.strip()]
+        assistant_texts_joined = " ".join(t.get("text", "") for t in assistant_texts)
+        matched = [k for k in keywords if k in assistant_texts_joined]
+        if not matched:
+            failures.append(f"assistant transcript 에 키워드 {keywords} 미포함")
 
     if failures:
         print(f"[{args.label}] FAIL")

@@ -205,6 +205,24 @@ async def run_scenario(
                 pass
             await ws.send(json.dumps({"type": "dtmf", "digit": "1"}))
             await asyncio.sleep(min(timeout - 3, 6))
+        elif scenario == "dtmf_terminate":
+            # DTMF "0" → seed 의 dtmf_map 의 terminate 액션으로 즉시 통화 종료.
+            try:
+                await asyncio.wait_for(greeting_done.wait(), timeout=10.0)
+                await asyncio.sleep(0.3)
+            except asyncio.TimeoutError:
+                pass
+            await ws.send(json.dumps({"type": "dtmf", "digit": "0"}))
+            await asyncio.sleep(min(timeout - 3, 4))
+        elif scenario == "kb_question":
+            # KB 키워드 발화 ("여행 보험 약관") → LLM 이 RAG context 활용 응답.
+            # 비결정적: LLM 이 KB 내용 (24시간 / 영수증 / 5영업일) 단어를 응답에 포함하길 기대.
+            # verify 는 KB 내용 키워드 포함 여부 검증.
+            await ws.send(json.dumps({
+                "type": "text",
+                "text": "여행 보험 약관에 대해 알려주세요.",
+            }))
+            await asyncio.sleep(min(timeout - 3, 12))
         else:
             raise ValueError(f"unknown scenario: {scenario}")
 
@@ -245,7 +263,7 @@ async def run_scenario(
 async def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--bot-id", type=int, required=True)
-    p.add_argument("--scenario", required=True, choices=["basic", "barge_in", "end_call", "text_only", "silent_transfer", "idle_timeout", "dtmf"])
+    p.add_argument("--scenario", required=True, choices=["basic", "barge_in", "end_call", "text_only", "silent_transfer", "idle_timeout", "dtmf", "dtmf_terminate", "kb_question"])
     p.add_argument("--wav", default=None, help="fixture 이름 (확장자 제외)")
     p.add_argument("--backend", default="http://127.0.0.1:8765")
     p.add_argument("--timeout", type=float, default=30.0)

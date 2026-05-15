@@ -88,12 +88,15 @@ async def seed() -> dict:
         db.add_all([main_bot, sub_bot])
         await db.flush()
 
-        # sub_bot.id 확보 후 main_bot system_prompt 업데이트 — LLM 이 환불 의도 시
-        # transfer_to_agent 도구를 정확한 target_bot_id 로 호출하도록 안내.
+        # sub_bot.id 확보 후 main_bot system_prompt 업데이트.
+        # - 환불 의도 → transfer_to_agent (silent_transfer 시나리오 검증용)
+        # - 그 외 → 제공된 knowledge 문서 활용 (kb_question 시나리오 검증용)
         main_bot.system_prompt = (
             "당신은 친절한 안내 봇입니다 ({{bot_id}}).\n"
             f"환불 관련 문의가 들어오면 즉시 transfer_to_agent 도구를 호출해서 "
-            f"target_bot_id={sub_bot.id} 에 인계하세요. 다른 답변은 하지 마세요."
+            f"target_bot_id={sub_bot.id} 에 인계하세요.\n"
+            "그 외 질문은 제공된 knowledge 문서의 내용을 활용해 답변하세요. "
+            "특히 보험 약관 관련 질문에는 24시간 이내 청구, 영수증 사본 필수, 5영업일 처리 등의 정보를 명시하세요."
         )
 
         skill = models.Skill(
@@ -134,7 +137,7 @@ async def seed() -> dict:
             # e2e: DTMF 시나리오 검증용 매핑.
             dtmf_map={
                 "1": {"type": "say", "payload": "1번 안내입니다"},
-                "0": {"type": "terminate", "payload": ""},
+                "0": {"type": "terminate", "payload": "bot_terminate"},
             },
         )
         db.add(callbot)
