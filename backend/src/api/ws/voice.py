@@ -6,6 +6,7 @@
         | {"type":"end_call"}
         | {"type":"interrupt"}
         | {"type":"dtmf","digit":"<0-9*#>"}              # AICC-910 — 키패드 입력
+        | {"type":"playback_done","id":"<speak_id>"}     # TTS 큐 재생 완료 ack
 
 [server → client]
   bytes : LINEAR16 16kHz mono PCM 청크 (TTS)
@@ -14,6 +15,7 @@
         | {"type":"skill","name":"..."}
         | {"type":"handover"}
         | {"type":"barge_in","in_greeting":bool,"elapsed_ms":int|None}  # 봇 발화 중단
+        | {"type":"speak_end","id":"<speak_id>"}         # turn 발화 PCM 송출 완료 marker
         | {"type":"error","where":"...","message":"..."}
         | {"type":"end","reason":"..."}
 """
@@ -114,6 +116,9 @@ async def voice_ws(websocket: WebSocket, session_id: int):
                         # AICC-910 (c) — DTMF 키패드 입력. CallbotAgent.dtmf_map 룩업 + action 실행.
                         digit = data.get("digit") or ""
                         await voice.on_dtmf(str(digit))
+                    elif mtype == "playback_done":
+                        # Playback ack — 클라가 TTS 큐 재생 완료를 보고. idle 타이머 baseline 갱신.
+                        await voice.on_playback_done(str(data.get("id") or ""))
         except WebSocketDisconnect:
             logger.event("call.disconnected", session_id=sess_id, reason="client_disconnect")
             await voice.close(reason="client_disconnect")

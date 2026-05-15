@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -200,6 +201,12 @@ class _SessionState:
     # _run_streaming_turn 이 commit 한 sentence 누적 (turn 도중 barge-in cancel 시 _handle_user_final
     # 이 인스턴스 상태에서 partial 을 회수해 transcript 에 저장하기 위함). turn 시작 시 [] 로 초기화.
     streaming_sentences: list[str] = field(default_factory=list)
+    # Playback ack — `_speak` 가 PCM 다 emit 한 직후 서버는 speak_end marker 를 클라에 보내고
+    # pending_speak_id 를 세팅. 클라가 자기 audio output 큐 재생 완료 시 `playback_done` 회신,
+    # 서버는 그 시점에 `_last_activity_t` 를 갱신 (idle 타이머 baseline 정확화). 클라 무응답 대비
+    # `_playback_fallback_timer` 가 audio_duration + 5s 후 강제 baseline 갱신.
+    pending_speak_id: str | None = None
+    playback_fallback_task: asyncio.Task | None = None
 
 
 class VoiceSession:
@@ -675,6 +682,9 @@ class VoiceSession:
             self._stt_task.cancel()
         if self.state.pending_runtime_task and not self.state.pending_runtime_task.done():
             self.state.pending_runtime_task.cancel()
+        # Playback ack fallback timer 정리.
+        if self.state.playback_fallback_task and not self.state.playback_fallback_task.done():
+            self.state.playback_fallback_task.cancel()
         # (b) AICC-910 — idle 타이머 정리
         self._cancel_idle_timer()
         await self._audio_q.put(None)
@@ -758,6 +768,13 @@ class VoiceSession:
                     "elapsed_ms": elapsed_ms,
                 })
                 self.state.speech_task.cancel()
+                # playback ack 정리 — 클라가 보낼 playback_done 은 이제 무의미 (cancel 된 발화).
+                # 늦게 도착해도 id mismatch 로 무시되게 pending 클리어.
+                self.state.pending_speak_id = None
+                fb = self.state.playback_fallback_task
+                if fb is not None and not fb.done():
+                    fb.cancel()
+                self.state.playback_fallback_task = None
         # 이전 turn 의 STT task 가 살아 있으면 정리 — 새 audio_q 로 교체하므로 그대로 두면 leak.
         if self._stt_task and not self._stt_task.done():
             self._stt_task.cancel()
@@ -2083,7 +2100,11 @@ class VoiceSession:
         # (e) AICC-910 — speaking_rate / pitch 전달
         rate, pitch = self._tts_rate_pitch()
 
+        # Playback ack — emit 한 PCM byte 누적해 audio_duration 계산. fallback timer 의 timeout 기준.
+        total_pcm_bytes = 0
+
         async def speak_task():
+            nonlocal total_pcm_bytes
             try:
                 async for pcm in self.tts.synthesize(
                     text=text_to_speak,
@@ -2099,6 +2120,7 @@ class VoiceSession:
                     if self.state.turn_t0 is not None and self.state.first_audio_t is None:
                         self.state.first_audio_t = _time.monotonic()
                     await self.send_bytes(pcm)
+                    total_pcm_bytes += len(pcm)
             except asyncio.CancelledError:
                 # propagate — speech_task 가 CancelledError 로 종료해야 outer `await speech_task` 가
                 # 예외를 받음. `return` 으로 삼키면 task 가 정상 종료로 보여 commit 판정 어긋남.
@@ -2128,13 +2150,61 @@ class VoiceSession:
         finally:
             # 봇 발화 종료 시각 기록 — _on_speech_start의 echo grace 기준점.
             # cancel(barge-in)된 경우에도 잔향 가능성 있어 동일하게 기록.
+            # 주의: 과거에는 여기서 `_last_activity_t` 도 갱신했지만, idle 타이머 baseline 정확화를
+            # 위해 `on_playback_done` / `_playback_fallback_timer` 로 이관됨 (PR #14).
             self.state.last_speak_end_t = _time.monotonic()
-            # (b) AICC-910 — 봇 발화 종료도 침묵 카운트 기준점 (사용자 발화가 더 늦은 경우만 갱신)
-            # 테스트가 __init__ 우회하는 경우 안전 가드.
-            last = getattr(self, "_last_activity_t", 0.0)
-            if last < self.state.last_speak_end_t:
-                self._last_activity_t = self.state.last_speak_end_t
+
+        # PCM 끝까지 송출된 경우(=cancel 안 됨)만 playback ack 채널 활성화. cancel (barge-in) 케이스의
+        # `_last_activity_t` 갱신은 `_on_speech_end:776` 이 담당.
+        if not completed or self._closed:
+            return completed
+
+        speak_id = uuid.uuid4().hex
+        self.state.pending_speak_id = speak_id
+        # 이전 turn 의 fallback timer 가 남아있으면 정리 (보통 없음 — playback_done 도착 시점에 cancel)
+        prev_fallback = self.state.playback_fallback_task
+        if prev_fallback is not None and not prev_fallback.done():
+            prev_fallback.cancel()
+        audio_duration_s = total_pcm_bytes / float(self.sample_rate * 2) if total_pcm_bytes else 0.0
+        self.state.playback_fallback_task = asyncio.create_task(
+            self._playback_fallback_timer(speak_id, audio_duration_s)
+        )
+        await self.send_json({"type": "speak_end", "id": speak_id})
         return completed
+
+    async def _playback_fallback_timer(self, speak_id: str, audio_duration_s: float) -> None:
+        """클라 `playback_done` 미수신 시 보수 timeout 으로 `_last_activity_t` 강제 갱신.
+
+        audio_duration + 5s 마진. 도착이 정상이면 timer 는 cancel 되므로 본 함수는 거의 안 도달.
+        """
+        import time as _time
+        try:
+            await asyncio.sleep(audio_duration_s + 5.0)
+        except asyncio.CancelledError:
+            return
+        if self.state.pending_speak_id == speak_id:
+            self.state.pending_speak_id = None
+            self._last_activity_t = _time.monotonic()
+            logger.warning(
+                "playback_done 미수신 — fallback baseline",
+                speak_id=speak_id,
+                audio_duration_s=audio_duration_s,
+            )
+
+    async def on_playback_done(self, speak_id: str) -> None:
+        """클라가 PCM 큐 재생 완료를 보고. 일치하는 pending_speak_id 만 baseline 갱신.
+
+        늦게 도착한 ack / id mismatch / barge-in 으로 pending 이 클리어된 케이스는 silent ignore.
+        """
+        import time as _time
+        if not speak_id or self.state.pending_speak_id != speak_id:
+            return
+        self.state.pending_speak_id = None
+        t = self.state.playback_fallback_task
+        if t is not None and not t.done():
+            t.cancel()
+        self.state.playback_fallback_task = None
+        self._last_activity_t = _time.monotonic()
 
     async def _save_transcript(self, role: str, text: str) -> None:
         t = models.Transcript(session_id=self.session_id, role=role, text=text, is_final=True)
