@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from ..core.config import settings
-from ..core.logging import get_logger, hash_text
+from ..core.logging import get_logger, hash_text, reset_bot_id, set_bot_id
 from ..domain import callbot as callbot_module
 from ..domain.call_session import normalize_end_reason
 from ..domain.global_rule import GlobalAction, dispatch as dispatch_global_rules
@@ -241,6 +242,10 @@ class VoiceSession:
         self._last_activity_t: float = 0.0
         # idle prompt 가 이미 발화되었는지 — 매 idle 세션에서 1회만.
         self._idle_prompt_emitted: bool = False
+        # AICC-908/909 — transfer 로 bot_id 가 바뀌면 ContextVar(_bot_id_ctx) 도 동기.
+        # ws_call_context 가 진입 시 main bot_id 로 1회 set 했으므로, 인계 시 self 가 그 위에
+        # 새 토큰을 쌓는다. close 시 LIFO 로 reset.
+        self._bot_id_token: contextvars.Token | None = None
 
     async def _check_global_rules(self, user_text: str) -> bool:
         """공통 규칙 매칭 검사. 매치되면 액션 실행 후 True 반환.
@@ -290,6 +295,7 @@ class VoiceSession:
                 "transfer_to_agent",
                 {"target_bot_id": matched.target_bot_id, "reason": matched.reason or matched.pattern},
                 runtime=None, turn_id=None,
+                via="global_rule",
             )
             if not self._closed:
                 await self.set_state("idle")
@@ -334,6 +340,33 @@ class VoiceSession:
             if any_membership is not None:
                 return bool(getattr(any_membership, "silent_transfer", False))
         return False
+
+    # ---------- AICC-908 — 인계 시 bot_id 동기 ----------
+    def _switch_bot(self, new_bot_id: int) -> None:
+        """transfer_to_agent 시 self.bot_id + ContextVar(_bot_id_ctx) + var_ctx.system["bot_id"]
+        를 함께 갱신.
+
+        ws_call_context 가 통화 시작 시 main bot_id 로 토큰을 1회 set 한다. 인계가 일어나면
+        self.bot_id 만 바꾸고 ContextVar 를 갱신하지 않으면 이후 logger.event 가 stale 한
+        main bot_id 로 라벨링된다 — Slack alert / JSON 로그 / 통화 흐름 재구성 모두 어긋남.
+        var_ctx.system["bot_id"] 도 start() 에서 1회만 set 되므로, sub 봇의 system_prompt
+        에서 `{{bot_id}}` 를 쓰면 stale 한 main bot_id 로 resolve 됨 → 세 곳 동시 갱신.
+        이전 인계 토큰이 있으면 reset 후 새로 set (LIFO 보장 — ws_call_context 의 outer
+        token 보다 위에만 self 토큰이 쌓이도록).
+        """
+        if self._bot_id_token is not None:
+            try:
+                reset_bot_id(self._bot_id_token)
+            except (ValueError, LookupError):
+                # 다른 컨텍스트에서 set 됐을 가능성 — silent 처리 후 새 토큰으로 진행.
+                pass
+            self._bot_id_token = None
+        self.bot_id = int(new_bot_id)
+        self._bot_id_token = set_bot_id(str(new_bot_id))
+        # 템플릿 치환용 system 변수도 동기 — {{bot_id}} 사용처가 prompt/SMS body 등에 있을 수
+        # 있고 콘솔 자유 입력이라 잠재 silent corruption 회피.
+        if hasattr(self, "state") and getattr(self.state, "var_ctx", None) is not None:
+            self.state.var_ctx.set_system("bot_id", str(new_bot_id))
 
     # ---------- AICC-910 — CallbotAgent 설정 캐시 ----------
     async def _load_callbot_settings(self) -> "callbot_module.CallbotAgent | None":
@@ -540,6 +573,7 @@ class VoiceSession:
                 "transfer_to_agent",
                 {"target_bot_id": target, "reason": "dtmf"},
                 runtime=None, turn_id=None,
+                via="dtmf",
             )
             if not self._closed:
                 await self.set_state("idle")
@@ -669,6 +703,16 @@ class VoiceSession:
         # 통화 후 분석 (백그라운드 태스크) — 자체 SessionLocal 로 처리 (post_call.analyze_session)
         asyncio.create_task(self._run_post_call_analysis(model_name))
 
+        # AICC-908 — 인계 토큰 정리. ws_call_context 의 outer t_bot 이 reset 되기 전에 self 가
+        # 쌓은 토큰부터 먼저 reset (LIFO). post_call 태스크는 이미 spawn 됐고 자기 context 사본을
+        # 가지므로 여기서 reset 해도 영향 없음.
+        if self._bot_id_token is not None:
+            try:
+                reset_bot_id(self._bot_id_token)
+            except (ValueError, LookupError):
+                pass
+            self._bot_id_token = None
+
     # ---------- 내부 로직 ----------
     async def _on_speech_start(self) -> None:
         # Echo grace — idle 상태에서 봇 발화 종료 직후 들어온 speech_start는 잔향으로 간주, 무시.
@@ -693,17 +737,24 @@ class VoiceSession:
             if self.state.last_speak_start_t > 0:
                 elapsed_ms = int((_time.monotonic() - self.state.last_speak_start_t) * 1000)
             in_greeting = bool(self.state.in_greeting)
-            logger.event(
-                "call.barge_in",
-                in_greeting=in_greeting,
-                elapsed_since_speak_start_ms=elapsed_ms,
-            )
-            await self.send_json({
-                "type": "barge_in",
-                "in_greeting": in_greeting,
-                "elapsed_ms": elapsed_ms,
-            })
-            self.state.speech_task.cancel()
+            # 신규분에 span() 패턴 적용 — 통화 상세 Waterfall 에서 barge-in 시점 시각화.
+            # span() 이 try/finally 로 _stack pop 보장 → tracer.start/end raw 호출의 누수 위험 회피.
+            async with self._tracer.span(
+                "barge_in",
+                "span",
+                input={"in_greeting": in_greeting, "elapsed_ms": elapsed_ms},
+            ):
+                logger.event(
+                    "call.barge_in",
+                    in_greeting=in_greeting,
+                    elapsed_since_speak_start_ms=elapsed_ms,
+                )
+                await self.send_json({
+                    "type": "barge_in",
+                    "in_greeting": in_greeting,
+                    "elapsed_ms": elapsed_ms,
+                })
+                self.state.speech_task.cancel()
         # 이전 turn 의 STT task 가 살아 있으면 정리 — 새 audio_q 로 교체하므로 그대로 두면 leak.
         if self._stt_task and not self._stt_task.done():
             self._stt_task.cancel()
@@ -1458,12 +1509,23 @@ class VoiceSession:
             #   bot_id만 교체하고 build_runtime을 새 봇으로 다시 호출 → system_prompt만 sub 봇 페르소나로 갱신.
             #   _build_history는 session_id 기반 DB 쿼리라 sub 봇에서도 동일 history 조회 가능.
             silent = await self._membership_silent_transfer(target_id)
-            self.bot_id = target_bot_id
+            prev_bot_id = self.bot_id
+            # self.bot_id + ContextVar(_bot_id_ctx) 동시 갱신 — 이후 logger.event 가 sub bot 으로 라벨링.
+            self._switch_bot(target_bot_id)
             # bot_id 변경 후 CallbotAgent 캐시 리로드 — dtmf_map / idle / TTS rate·pitch /
             # thinking_budget 등 봇별 설정이 stale 채로 남으면 인계 후에도 이전 봇 동작.
             self._callbot_settings = await self._load_callbot_settings()
             self.state.active_skill = None
             self.state.auto_context = {}
+            logger.event(
+                "call.transfer",
+                from_bot_id=prev_bot_id,
+                to_bot_id=target_bot_id,
+                target_name=target_name,
+                reason=reason or None,
+                silent=silent,
+                via="tool",
+            )
             await self.send_json({
                 "type": "transfer_to_agent", "target_bot_id": target_id,
                 "target_name": target_name, "reason": reason, "silent": silent,
@@ -1594,9 +1656,15 @@ class VoiceSession:
             return result.result, False
         return {"error": result.error or "unknown_error"}, False
 
-    # ---------- 레거시 _handle_tool_signal — global_rule transfer_to_agent에서만 호출 ----------
+    # ---------- 레거시 _handle_tool_signal — global_rule + DTMF transfer_to_agent 진입점 ----------
 
-    async def _handle_tool_signal(self, tool_name: str, args: dict, runtime, turn_id: int | None = None) -> None:
+    async def _handle_tool_signal(
+        self, tool_name: str, args: dict, runtime, turn_id: int | None = None,
+        *, via: str = "global_rule",
+    ) -> None:
+        """transfer_to_agent 등의 builtin 시그널 핸들러. via 는 logger.event 라벨링용
+        (예: "global_rule" / "dtmf"). 호출처가 명시 안 하면 기본 "global_rule".
+        """
         # builtin 단축 처리 (DB에 없어도 동작하도록)
         if tool_name in ("end_call",):
             await self._record_tool_invocation(tool_name, args, result={"signal": "end_call"})
@@ -1623,12 +1691,23 @@ class VoiceSession:
                 return
             # AICC-908 — silent_transfer 멤버십 플래그 적용 (자세한 의미는 _execute_tool_for_loop 분기 참조)
             silent = await self._membership_silent_transfer(target_id)
-            self.bot_id = target_bot_id
+            prev_bot_id = self.bot_id
+            # self.bot_id + ContextVar(_bot_id_ctx) 동시 갱신 — 이후 logger.event 가 sub bot 으로 라벨링.
+            self._switch_bot(target_bot_id)
             # bot_id 변경 후 CallbotAgent 캐시 리로드 — dtmf_map / idle / TTS rate·pitch /
             # thinking_budget 등 봇별 설정이 stale 채로 남으면 인계 후에도 이전 봇 동작.
             self._callbot_settings = await self._load_callbot_settings()
             self.state.active_skill = None
             self.state.auto_context = {}
+            logger.event(
+                "call.transfer",
+                from_bot_id=prev_bot_id,
+                to_bot_id=target_bot_id,
+                target_name=target_name,
+                reason=reason or None,
+                silent=silent,
+                via=via,
+            )
             await self.send_json({
                 "type": "transfer_to_agent", "target_bot_id": target_id,
                 "target_name": target_name, "reason": reason, "silent": silent,

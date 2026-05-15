@@ -128,6 +128,8 @@ def _make_voice_session(db, *, session_id: int, bot_id: int) -> VoiceSession:
     tracer.start = AsyncMock(return_value=(1, 0.0))
     tracer.end = AsyncMock()
     sess._tracer = tracer
+    # AICC-908/909 — _switch_bot 가 사용. 인계 ContextVar 토큰 stash.
+    sess._bot_id_token = None
     return sess
 
 
