@@ -41,9 +41,10 @@ class GeminiLLM(LLMPort):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse:
         contents = self._build_contents(history or [], user_text)
-        config = self._build_config(system_prompt, tools)
+        config = self._build_config(system_prompt, tools, thinking_budget=thinking_budget)
 
         def call():
             return self._client.models.generate_content(
@@ -61,6 +62,7 @@ class GeminiLLM(LLMPort):
         tool_result: object,
         model: str,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse:
         types = self._types
         contents = self._build_contents(history or [], user_text=None)
@@ -74,7 +76,7 @@ class GeminiLLM(LLMPort):
                 response={"result": tool_result},
             )],
         ))
-        config = self._build_config(system_prompt, tools)
+        config = self._build_config(system_prompt, tools, thinking_budget=thinking_budget)
 
         def call():
             return self._client.models.generate_content(
@@ -90,6 +92,7 @@ class GeminiLLM(LLMPort):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> AsyncIterator[LLMResponse]:
         """generate_content_stream(sync iterator)을 asyncio.Queue로 브릿지하면서
         문장 경계로 분할해 LLMResponse를 yield.
@@ -98,7 +101,7 @@ class GeminiLLM(LLMPort):
         text 경로: 문장 완성마다 yield, 종결자 없는 마지막 partial은 stream 끝에 yield.
         """
         contents = self._build_contents(history or [], user_text)
-        config = self._build_config(system_prompt, tools)
+        config = self._build_config(system_prompt, tools, thinking_budget=thinking_budget)
 
         loop = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue()
@@ -170,12 +173,35 @@ class GeminiLLM(LLMPort):
             contents.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
         return contents
 
-    def _build_config(self, system_prompt: str, tools: list[ToolSpec] | None):
+    def _build_config(
+        self,
+        system_prompt: str,
+        tools: list[ToolSpec] | None,
+        thinking_budget: int | None = None,
+    ):
+        """GenerateContentConfig 빌더.
+
+        thinking_budget (AICC-910 f2 + thinking budget 옵션화):
+          - None: ThinkingConfig 자체를 안 붙임 — SDK 기본(=모델별 dynamic) 위임.
+                  CallbotAgent.llm_thinking_budget NULL 인 봇은 이 경로.
+          - int : ThinkingConfig(thinking_budget=N) 적용. SDK 가 미지원이면 silently skip.
+                  0=off (TTFF 단축), -1=dynamic 명시, N>0=토큰 한도.
+
+        모델 선택은 호출자가 `model` 인자로 전달 (CallbotAgent.llm_model). 모델별 메서드 호출
+        과는 무관 — SDK 가 모델 이름으로 라우팅한다.
+        """
         types = self._types
         kwargs: dict[str, Any] = {"system_instruction": system_prompt}
         if tools:
             fds = [self._to_function_declaration(t) for t in tools]
             kwargs["tools"] = [types.Tool(function_declarations=fds)]
+        if thinking_budget is not None:
+            thinking_cls = getattr(types, "ThinkingConfig", None)
+            if thinking_cls is not None:
+                try:
+                    kwargs["thinking_config"] = thinking_cls(thinking_budget=int(thinking_budget))
+                except Exception as e:
+                    logger.debug("ThinkingConfig 미지원 모델 — skip: %s", e)
         return types.GenerateContentConfig(**kwargs)
 
     def _to_function_declaration(self, spec: ToolSpec):

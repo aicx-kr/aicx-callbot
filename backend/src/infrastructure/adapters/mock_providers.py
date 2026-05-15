@@ -25,7 +25,11 @@ from ...domain.ports import (
 
 class MockSTT(STTPort):
     async def transcribe(
-        self, audio_chunks: AsyncIterator[bytes], language: str, sample_rate: int
+        self,
+        audio_chunks: AsyncIterator[bytes],
+        language: str,
+        sample_rate: int,
+        keywords: list[str] | None = None,
     ) -> AsyncIterator[STTResult]:
         async for _ in audio_chunks:
             pass
@@ -34,7 +38,13 @@ class MockSTT(STTPort):
 
 class MockTTS(TTSPort):
     async def synthesize(
-        self, text: str, language: str, voice: str, sample_rate: int
+        self,
+        text: str,
+        language: str,
+        voice: str,
+        sample_rate: int,
+        speaking_rate: float = 1.0,
+        pitch: float = 0.0,
     ) -> AsyncIterator[bytes]:
         duration_ms = max(400, min(2000, len(text) * 80))
         total_samples = int(sample_rate * duration_ms / 1000)
@@ -59,6 +69,7 @@ class MockLLM(LLMPort):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse:
         return LLMResponse(
             text=f"네, '{user_text}' 관련해서 도와드릴게요. (mock 응답)",
@@ -75,6 +86,7 @@ class MockLLM(LLMPort):
         tool_result: object,
         model: str,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse:
         return LLMResponse(
             text=f"도구 '{tool_name}' 결과를 받았습니다. (mock followup)",
@@ -89,6 +101,7 @@ class MockLLM(LLMPort):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> AsyncIterator[LLMResponse]:
         # 2개 문장으로 쪼개 yield (실 stream 테스트용)
         yield LLMResponse(text=f"네, '{user_text}' 관련해서 도와드릴게요.", tool_call=None, raw_model_content=None)

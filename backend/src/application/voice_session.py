@@ -19,12 +19,14 @@ from sqlalchemy.orm import selectinload
 
 from ..core.config import settings
 from ..core.logging import get_logger, hash_text
+from ..domain import callbot as callbot_module
 from ..domain.call_session import normalize_end_reason
 from ..domain.global_rule import GlobalAction, dispatch as dispatch_global_rules
-from ..domain.ports import ChatMessage, LLMPort, STTPort, ToolSpec, TTSPort, VADPort
+from ..domain.ports import ChatMessage, LLMPort, LLMResponse, STTPort, ToolSpec, TTSPort, VADPort
 from ..domain.variable import VariableContext
 from ..infrastructure import models
 from ..infrastructure.db import SessionLocal
+from ..infrastructure.repositories.callbot_agent_repository import SqlAlchemyCallbotAgentRepository
 from .post_call import analyze_session
 from .skill_runtime import build_runtime, find_bot, parse_signal_and_strip
 from .tool_runtime import execute_tool
@@ -185,6 +187,15 @@ class _SessionState:
     # Echo grace — 봇 발화 종료 직후 짧은 시간(_ECHO_GRACE_S) 동안 새로 들어온 speech_start는
     # 봇 자기 발화 잔향(echo)으로 간주하고 무시. barge-in (speaking 중 끼어들기)은 그대로 작동.
     last_speak_end_t: float = 0.0
+    # 봇 발화 시작 시각 — barge-in 시 elapsed_since_speak_start_ms 계산용.
+    last_speak_start_t: float = 0.0
+    # (a) AICC-910 — 인사말 발화 중 표식. greeting_barge_in=False 면 _on_speech_start 가 cancel 스킵.
+    in_greeting: bool = False
+    # (b) AICC-910 — 무응답 자동 종료 타이머 task. idle 진입 시 시작, listening/thinking/speaking
+    #     진입 시 즉시 cancel. close() 직전 cancel.
+    idle_task: asyncio.Task | None = None
+    # interim STT 첫 도달 시각 — (a) barge-in 가속 판정 (f1) 단위 테스트용.
+    first_interim_t: float | None = None
 
 
 class VoiceSession:
@@ -223,6 +234,13 @@ class VoiceSession:
         self._stt_task: asyncio.Task | None = None
         self._closed = False
         self._tracer = TraceRecorder(session_id)
+        # (a)(b)(d)(e) AICC-910 — 현재 봇이 속한 CallbotAgent (음성 동작 설정).
+        # start() 에서 1회 채워두고, 통화 동안 캐시. None 이면 callbot 미연결 봇.
+        self._callbot_settings: "callbot_module.CallbotAgent | None" = None
+        # 침묵 누적 측정용 — 마지막 사용자 발화 종료/봇 발화 종료 중 최신 시각.
+        self._last_activity_t: float = 0.0
+        # idle prompt 가 이미 발화되었는지 — 매 idle 세션에서 1회만.
+        self._idle_prompt_emitted: bool = False
 
     async def _check_global_rules(self, user_text: str) -> bool:
         """공통 규칙 매칭 검사. 매치되면 액션 실행 후 True 반환.
@@ -317,10 +335,236 @@ class VoiceSession:
                 return bool(getattr(any_membership, "silent_transfer", False))
         return False
 
+    # ---------- AICC-910 — CallbotAgent 설정 캐시 ----------
+    async def _load_callbot_settings(self) -> "callbot_module.CallbotAgent | None":
+        """현재 bot 이 속한 CallbotAgent 도메인 객체를 1회 로드 (start 시점 호출).
+
+        CallbotAgent 가 없으면 None — barge-in/idle/DTMF/STT keywords/TTS rate 모두 기본값 사용.
+        Repository 통해 domain entity 로 받음 — Clean Architecture 준수.
+        """
+        try:
+            async with SessionLocal() as db:
+                repo = SqlAlchemyCallbotAgentRepository(db)
+                agent = await repo.find_by_bot_id(self.bot_id)
+        except Exception as e:
+            logger.warning(
+                "CallbotAgent 설정 로드 실패 — 기본값 사용",
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
+            return None
+        return agent
+
+    def _callbot(self) -> "callbot_module.CallbotAgent | None":
+        # 테스트가 __init__ 우회 (VoiceSession.__new__) — 안전 가드.
+        return getattr(self, "_callbot_settings", None)
+
+    def _stt_keywords(self) -> list[str]:
+        cb = self._callbot()
+        return cb.normalized_stt_keywords() if cb else []
+
+    def _tts_rate_pitch(self) -> tuple[float, float]:
+        cb = self._callbot()
+        if cb is None:
+            return 1.0, 0.0
+        return cb.normalized_speaking_rate(), cb.normalized_pitch()
+
+    def _thinking_budget(self) -> int | None:
+        cb = self._callbot()
+        return cb.normalized_thinking_budget() if cb is not None else None
+
+    def _tts_apply_pronunciation(self, text: str) -> str:
+        """CallbotAgent.tts_pronunciation 의 단순 substring 치환.
+
+        (d) AICC-910: 텍스트 치환만 — SSML 도입은 1차 범위 밖. 빈 dict 면 원본 그대로.
+        legacy: tts_pronunciation 비어 있고 pronunciation_dict 만 있으면 그것도 적용.
+        """
+        cb = self._callbot()
+        if cb is None:
+            return text
+        mapping = cb.tts_pronunciation or {}
+        if not mapping and cb.pronunciation_dict:
+            mapping = cb.pronunciation_dict
+        if not mapping:
+            return text
+        out = text
+        for src, dst in mapping.items():
+            if not src:
+                continue
+            out = out.replace(str(src), str(dst))
+        return out
+
     # ---------- 상태 전이 ----------
     async def set_state(self, value: str) -> None:
+        prev = self.state.state
         self.state.state = value
         await self.send_json({"type": "state", "value": value})
+        # (b) AICC-910 idle 자동 종료 타이머 관리
+        if value == "idle":
+            self._start_idle_timer()
+        elif prev == "idle" and value != "idle":
+            self._cancel_idle_timer()
+
+    # ---------- (b) AICC-910 무응답 자동 종료 ----------
+    def _start_idle_timer(self) -> None:
+        """idle 진입 직후 호출. 7s 침묵 → idle_prompt_text TTS 1회, 15s 누적 → close('idle_timeout')."""
+        if self._closed:
+            return
+        self._cancel_idle_timer()
+        self._idle_prompt_emitted = False
+        import time as _time
+        self._last_activity_t = _time.monotonic()
+        self.state.idle_task = asyncio.create_task(self._idle_loop())
+
+    def _cancel_idle_timer(self) -> None:
+        t = self.state.idle_task
+        if t is not None and not t.done():
+            t.cancel()
+        self.state.idle_task = None
+
+    async def _idle_loop(self) -> None:
+        """침묵 누적을 폴링. 정책: 상태가 idle 상태에서 벗어나면 즉시 종료 (set_state 가 cancel).
+
+        polling 주기 200ms — 정확도 ±200ms 면 7000/15000 기준 무시 가능 (사용자 체감 X).
+        """
+        cb = self._callbot()
+        prompt_ms = cb.idle_prompt_ms if cb else 7000
+        terminate_ms = cb.idle_terminate_ms if cb else 15000
+        prompt_text = cb.idle_prompt_text if cb else "여보세요?"
+        # 0 이하 값은 기능 비활성 — 음수/0 들어오면 idle 종료 disable.
+        if terminate_ms <= 0:
+            return
+        try:
+            poll_s = 0.2
+            while not self._closed and self.state.state == "idle":
+                await asyncio.sleep(poll_s)
+                if self._closed or self.state.state != "idle":
+                    return
+                import time as _time
+                elapsed_ms = int((_time.monotonic() - self._last_activity_t) * 1000)
+                # 1차 prompt — 한 번만 발화
+                if not self._idle_prompt_emitted and prompt_ms > 0 and elapsed_ms >= prompt_ms:
+                    self._idle_prompt_emitted = True
+                    logger.event("call.idle_prompt", elapsed_ms=elapsed_ms, text_chars=len(prompt_text or ""))
+                    if prompt_text:
+                        try:
+                            await self._speak_idle_prompt(prompt_text)
+                        except Exception as e:
+                            logger.warning("idle prompt 발화 실패", error_type=type(e).__name__, error_message=str(e))
+                # 종료 — 누적 임계 초과
+                if elapsed_ms >= terminate_ms:
+                    logger.event("call.idle_timeout", elapsed_ms=elapsed_ms)
+                    await self.close(reason="idle_timeout")
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def _speak_idle_prompt(self, text: str) -> None:
+        """idle 동안 callbot 의 idle_prompt_text 를 TTS 로 1회 발화.
+
+        _speak 는 set_state("speaking") 을 호출 → set_state 가 idle 타이머를 cancel 한다.
+        prompt 발화 후 idle 로 복귀할 때 set_state("idle") 을 부르면 _start_idle_timer 가
+        _idle_prompt_emitted=False / _last_activity_t=now 로 baseline 을 다 리셋해서
+        "prompt 1회 + 누적 silence 로 terminate" 룰이 깨진다 (prompt 가 반복되거나
+        terminate 카운트가 prompt 발화 시점부터 재시작).
+        따라서 set_state 를 우회하고 state 만 "idle" 로 되돌린 뒤 idle_task 만 재시작 —
+        _idle_prompt_emitted (=True) 와 _last_activity_t (=prompt 직전 누적 시각) 보존.
+        """
+        # callbot 의 voice/language 사용 (없으면 봇 기본)
+        cb = self._callbot()
+        if cb is not None:
+            voice = cb.voice
+            language = cb.language
+        else:
+            # 폴백 — Bot.voice / Bot.language
+            async with SessionLocal() as db:
+                bot = await db.get(models.Bot, self.bot_id)
+                voice = bot.voice if bot else "ko-KR-Neural2-A"
+                language = bot.language if bot else "ko-KR"
+        await self.send_json({"type": "transcript", "role": "assistant", "text": text})
+        await self._save_transcript("assistant", text)
+        await self._speak(text, voice, language)
+        if self._closed:
+            return
+        # baseline 보존 idle 복귀 — _start_idle_timer 우회.
+        self.state.state = "idle"
+        await self.send_json({"type": "state", "value": "idle"})
+        self._cancel_idle_timer()
+        self.state.idle_task = asyncio.create_task(self._idle_loop())
+
+    # ---------- (c) AICC-910 DTMF ----------
+    async def on_dtmf(self, digit: str) -> None:
+        """클라이언트(SIP gateway/SDK) 의 DTMF 입력 처리. dtmf_map 룩업 + action 실행.
+
+        digit: "0"~"9" / "*" / "#" 중 하나. 그 외 값은 silently ignore.
+        action 종류: transfer_to_agent / say / terminate / inject_intent.
+        """
+        if self._closed:
+            return
+        if not digit or not isinstance(digit, str):
+            return
+        d = digit.strip()
+        if d not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#"}:
+            return
+        span_id, span_start = await self._tracer.start("dtmf_input", "span", input={"digit": d})
+        try:
+            cb = self._callbot()
+            if cb is None:
+                await self._tracer.end(span_id, span_start, meta={"matched": False, "reason": "no_callbot"})
+                return
+            mapping = cb.normalized_dtmf_map()
+            entry = mapping.get(d)
+            if not entry:
+                await self._tracer.end(span_id, span_start, meta={"matched": False, "reason": "unmapped"})
+                return
+            action = entry.get("type") or ""
+            payload = entry.get("payload") or ""
+            logger.event("call.dtmf", digit=d, action=action, payload_chars=len(payload))
+            await self._dispatch_dtmf(action, payload)
+            await self._tracer.end(span_id, span_start, meta={"matched": True, "action": action})
+        except Exception as e:
+            await self._tracer.end(span_id, span_start, error=str(e))
+            raise
+
+    async def _dispatch_dtmf(self, action: str, payload: str) -> None:
+        """4 action: transfer_to_agent / say / terminate / inject_intent."""
+        if action == "transfer_to_agent":
+            # payload = target bot_id (string). transfer_to_agent 도구 시그널 재사용.
+            try:
+                target = int(payload)
+            except (TypeError, ValueError):
+                logger.warning("DTMF transfer_to_agent payload 가 정수 아님 — skip", payload=payload)
+                return
+            # AICC-908 인계 경로 재사용 (handover 시그널 송신).
+            await self._handle_tool_signal(
+                "transfer_to_agent",
+                {"target_bot_id": target, "reason": "dtmf"},
+                runtime=None, turn_id=None,
+            )
+            if not self._closed:
+                await self.set_state("idle")
+        elif action == "say":
+            # callbot voice/language 로 즉시 발화
+            cb = self._callbot()
+            voice = cb.voice if cb else "ko-KR-Neural2-A"
+            language = cb.language if cb else "ko-KR"
+            if payload:
+                await self._save_transcript("assistant", payload)
+                await self.send_json({"type": "transcript", "role": "assistant", "text": payload})
+                await self._speak(payload, voice, language)
+            if not self._closed:
+                await self.set_state("idle")
+        elif action == "terminate":
+            # payload 가 EndReason enum 중 하나면 그 reason, 아니면 normalize.
+            reason = normalize_end_reason(payload or "normal")
+            await self.close(reason=reason)
+        elif action == "inject_intent":
+            # LLM 컨텍스트에 시스템 user 메시지 형태로 주입 — 다음 turn 에서 의도로 처리되도록.
+            # 즉시 _handle_user_final 호출 (DTMF 입력 자체를 사용자 발화로 취급).
+            if payload:
+                await self._handle_user_final(payload)
+        else:
+            logger.warning("알 수 없는 DTMF action", action=action)
 
     # ---------- 외부 입력 ----------
     async def on_audio(self, chunk: bytes) -> None:
@@ -342,6 +586,9 @@ class VoiceSession:
         await self._handle_user_final(user_text)
 
     async def start(self) -> None:
+        # (a)(b)(d)(e) AICC-910 — CallbotAgent 설정 우선 로드 (greeting_barge_in 분기 등)
+        self._callbot_settings = await self._load_callbot_settings()
+
         await self.set_state("idle")
 
         # System + Dynamic 변수 채움 (vox VOX_AGENT_STRUCTURE §5)
@@ -369,7 +616,12 @@ class VoiceSession:
             await self.send_json(
                 {"type": "transcript", "role": "assistant", "text": greeting}
             )
-            await self._speak(greeting, runtime.voice, runtime.language)
+            # (a) AICC-910 — 인사말 동안 barge-in 가드. _on_speech_start 가 in_greeting 을 보고 분기.
+            self.state.in_greeting = True
+            try:
+                await self._speak(greeting, runtime.voice, runtime.language)
+            finally:
+                self.state.in_greeting = False
             # 인사말 발화 후 idle 복귀 — 안 그러면 클라이언트가 사용자 음성을 echo로 차단함
             if not self._closed:
                 await self.set_state("idle")
@@ -386,6 +638,8 @@ class VoiceSession:
             self._stt_task.cancel()
         if self.state.pending_runtime_task and not self.state.pending_runtime_task.done():
             self.state.pending_runtime_task.cancel()
+        # (b) AICC-910 — idle 타이머 정리
+        self._cancel_idle_timer()
         await self._audio_q.put(None)
         # 세션 격리: 종료 commit 은 자체 SessionLocal 로 — STT/LLM/TTS task 가 보유한 세션과 충돌 X
         # async lazy load 불가 → bot 관계 selectinload 로 함께 가져오기
@@ -425,20 +679,50 @@ class VoiceSession:
             if elapsed < _ECHO_GRACE_S:
                 logger.debug("speech_start ignored — within echo grace", elapsed_ms=int(elapsed * 1000))
                 return
-        # barge-in: 봇이 말하는 중이면 즉시 중단
+        # (a) AICC-910 — 인사말 동안 barge-in 가드. greeting_barge_in=False(기본)면 cancel skip.
+        if self.state.in_greeting:
+            cb = self._callbot()
+            allow = bool(cb.greeting_barge_in) if cb is not None else False
+            if not allow:
+                logger.debug("speech_start ignored — greeting_barge_in disabled")
+                return
+        # barge-in: 봇이 말하는 중이면 즉시 중단 (TTS speech_task + STT 이전 task 둘 다 정리)
         if self.state.state == "speaking" and self.state.speech_task:
+            import time as _time
+            elapsed_ms: int | None = None
+            if self.state.last_speak_start_t > 0:
+                elapsed_ms = int((_time.monotonic() - self.state.last_speak_start_t) * 1000)
+            in_greeting = bool(self.state.in_greeting)
+            logger.event(
+                "call.barge_in",
+                in_greeting=in_greeting,
+                elapsed_since_speak_start_ms=elapsed_ms,
+            )
+            await self.send_json({
+                "type": "barge_in",
+                "in_greeting": in_greeting,
+                "elapsed_ms": elapsed_ms,
+            })
             self.state.speech_task.cancel()
+        # 이전 turn 의 STT task 가 살아 있으면 정리 — 새 audio_q 로 교체하므로 그대로 두면 leak.
+        if self._stt_task and not self._stt_task.done():
+            self._stt_task.cancel()
         # 이전 발화의 prefetch task가 남아있으면 정리 (interim 도달 → speech_end 없이 끊긴 경우)
         if self.state.pending_runtime_task and not self.state.pending_runtime_task.done():
             self.state.pending_runtime_task.cancel()
         self.state.pending_runtime_task = None
         self.state.pending_runtime_interim_text = ""
+        # (f1) — 매 발화마다 interim 첫 도달 시각 리셋
+        self.state.first_interim_t = None
         await self.set_state("listening")
         # STT 스트림 시작
         self._audio_q = asyncio.Queue()
         self._stt_task = asyncio.create_task(self._run_stt())
 
     async def _on_speech_end(self) -> None:
+        import time as _time
+        # (b) AICC-910 — 사용자 발화 종료 시 침묵 카운트 리셋 (다음 turn 시작)
+        self._last_activity_t = _time.monotonic()
         await self._audio_q.put(None)
 
     def _maybe_start_prefetch(self, interim_text: str) -> None:
@@ -540,14 +824,22 @@ class VoiceSession:
         )
         final_text = ""
         partial_count = 0
+        # (d) AICC-910 — CallbotAgent.stt_keywords 를 phrase hint 로 STT 에 전달.
+        keywords = self._stt_keywords()
         try:
             async for result in self.stt.transcribe(
-                audio_iter(), language=runtime.language, sample_rate=self.sample_rate
+                audio_iter(),
+                language=runtime.language,
+                sample_rate=self.sample_rate,
+                keywords=keywords or None,
             ):
                 if not result.text:
                     continue
                 if not result.is_final:
                     partial_count += 1
+                    # (f1) AICC-910 — interim 첫 도달 시각 기록 (barge-in 가속 측정/테스트용)
+                    if self.state.first_interim_t is None:
+                        self.state.first_interim_t = time.monotonic()
                     # callbot_v0 흡수 #3 — interim N자+ 도달 시 build_runtime 선제 실행
                     self._maybe_start_prefetch(result.text)
                 await self.send_json(
@@ -851,6 +1143,7 @@ class VoiceSession:
         stream_iter = self.llm.stream(
             system_prompt=system_prompt, user_text=user_text, model=runtime.llm_model,
             history=history, tools=tool_specs,
+            thinking_budget=self._thinking_budget(),
         )
         try:
             try:
@@ -1083,6 +1376,7 @@ class VoiceSession:
             response = await self.llm.generate(
                 system_prompt=system_prompt, user_text=user_text, model=model,
                 history=history, tools=tools,
+                thinking_budget=self._thinking_budget(),
             )
             await self._tracer.end(
                 llm_id, llm_start,
@@ -1113,6 +1407,7 @@ class VoiceSession:
                 system_prompt=system_prompt, history=history,
                 prior_model_content=prior_model_content,
                 tool_name=tool_name, tool_result=tool_result, model=model, tools=tools,
+                thinking_budget=self._thinking_budget(),
             )
             await self._tracer.end(
                 llm_id, llm_start,
@@ -1164,6 +1459,9 @@ class VoiceSession:
             #   _build_history는 session_id 기반 DB 쿼리라 sub 봇에서도 동일 history 조회 가능.
             silent = await self._membership_silent_transfer(target_id)
             self.bot_id = target_bot_id
+            # bot_id 변경 후 CallbotAgent 캐시 리로드 — dtmf_map / idle / TTS rate·pitch /
+            # thinking_budget 등 봇별 설정이 stale 채로 남으면 인계 후에도 이전 봇 동작.
+            self._callbot_settings = await self._load_callbot_settings()
             self.state.active_skill = None
             self.state.auto_context = {}
             await self.send_json({
@@ -1326,6 +1624,9 @@ class VoiceSession:
             # AICC-908 — silent_transfer 멤버십 플래그 적용 (자세한 의미는 _execute_tool_for_loop 분기 참조)
             silent = await self._membership_silent_transfer(target_id)
             self.bot_id = target_bot_id
+            # bot_id 변경 후 CallbotAgent 캐시 리로드 — dtmf_map / idle / TTS rate·pitch /
+            # thinking_budget 등 봇별 설정이 stale 채로 남으면 인계 후에도 이전 봇 동작.
+            self._callbot_settings = await self._load_callbot_settings()
             self.state.active_skill = None
             self.state.auto_context = {}
             await self.send_json({
@@ -1416,6 +1717,7 @@ class VoiceSession:
                     user_text=followup_user,
                     model=runtime.llm_model,
                     history=followup_history,
+                    thinking_budget=self._thinking_budget(),
                 )
                 await self._tracer.end(llm2_id, llm2_start, output=followup, meta={"model": runtime.llm_model})
                 body2, _ = parse_signal_and_strip(followup)
@@ -1531,6 +1833,7 @@ class VoiceSession:
                     user_text=followup_user,
                     model=runtime.llm_model,
                     history=followup_history,
+                    thinking_budget=self._thinking_budget(),
                 )
                 await self._tracer.end(llm2_id, llm2_start, output=followup, meta={"model": runtime.llm_model})
                 body2, _ = parse_signal_and_strip(followup)
@@ -1631,11 +1934,22 @@ class VoiceSession:
     async def _speak(self, text: str, voice: str, language: str) -> None:
         import time as _time
         await self.set_state("speaking")
+        self.state.last_speak_start_t = _time.monotonic()
+
+        # (d) AICC-910 — TTS 텍스트 치환 (tts_pronunciation)
+        text_to_speak = self._tts_apply_pronunciation(text)
+        # (e) AICC-910 — speaking_rate / pitch 전달
+        rate, pitch = self._tts_rate_pitch()
 
         async def speak_task():
             try:
                 async for pcm in self.tts.synthesize(
-                    text=text, language=language, voice=voice, sample_rate=self.sample_rate
+                    text=text_to_speak,
+                    language=language,
+                    voice=voice,
+                    sample_rate=self.sample_rate,
+                    speaking_rate=rate,
+                    pitch=pitch,
                 ):
                     if self._closed:
                         return
@@ -1658,6 +1972,11 @@ class VoiceSession:
             # 봇 발화 종료 시각 기록 — _on_speech_start의 echo grace 기준점.
             # cancel(barge-in)된 경우에도 잔향 가능성 있어 동일하게 기록.
             self.state.last_speak_end_t = _time.monotonic()
+            # (b) AICC-910 — 봇 발화 종료도 침묵 카운트 기준점 (사용자 발화가 더 늦은 경우만 갱신)
+            # 테스트가 __init__ 우회하는 경우 안전 가드.
+            last = getattr(self, "_last_activity_t", 0.0)
+            if last < self.state.last_speak_end_t:
+                self._last_activity_t = self.state.last_speak_end_t
 
     async def _save_transcript(self, role: str, text: str) -> None:
         t = models.Transcript(session_id=self.session_id, role=role, text=text, is_final=True)

@@ -23,20 +23,36 @@ class VADEvent:
 
 
 class STTPort(ABC):
-    """음성 인식 포트 — PCM16 청크 스트림을 받아 transcript 스트림 반환."""
+    """음성 인식 포트 — PCM16 청크 스트림을 받아 transcript 스트림 반환.
+
+    AICC-910 (d): keywords 옵션 — STT phrase hint (도메인 단어 인식률 보정).
+    """
 
     @abstractmethod
     async def transcribe(
-        self, audio_chunks: AsyncIterator[bytes], language: str, sample_rate: int
+        self,
+        audio_chunks: AsyncIterator[bytes],
+        language: str,
+        sample_rate: int,
+        keywords: list[str] | None = None,
     ) -> AsyncIterator[STTResult]: ...
 
 
 class TTSPort(ABC):
-    """음성 합성 포트 — 텍스트를 받아 PCM16 청크 스트림 반환."""
+    """음성 합성 포트 — 텍스트를 받아 PCM16 청크 스트림 반환.
+
+    AICC-910 (e): speaking_rate (0.5~2.0), pitch (-20.0~20.0 semitones).
+    """
 
     @abstractmethod
     async def synthesize(
-        self, text: str, language: str, voice: str, sample_rate: int
+        self,
+        text: str,
+        language: str,
+        voice: str,
+        sample_rate: int,
+        speaking_rate: float = 1.0,
+        pitch: float = 0.0,
     ) -> AsyncIterator[bytes]: ...
 
 
@@ -92,6 +108,7 @@ class LLMPort(ABC):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse: ...
 
     @abstractmethod
@@ -104,6 +121,7 @@ class LLMPort(ABC):
         tool_result: object,
         model: str,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> LLMResponse:
         """이전 generate의 tool_call에 대한 결과를 주입하고 다음 응답을 받는다.
 
@@ -120,6 +138,7 @@ class LLMPort(ABC):
         model: str,
         history: list[ChatMessage] | None = None,
         tools: list[ToolSpec] | None = None,
+        thinking_budget: int | None = None,
     ) -> AsyncIterator[LLMResponse]:
         """generate의 streaming 변형 — 문장 단위로 LLMResponse를 yield.
 

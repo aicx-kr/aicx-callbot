@@ -157,6 +157,16 @@ export function TestPanel({ bot, voiceModeAvailable }: { bot: Bot; voiceModeAvai
       case 'skill':
         addBubble({ role: 'system', text: `🔀 스킬 전환 → ${msg.name}` });
         break;
+      case 'barge_in': {
+        const inGreeting = Boolean(msg.in_greeting);
+        const elapsed = typeof msg.elapsed_ms === 'number' ? `${msg.elapsed_ms}ms 발화 후` : '';
+        const label = inGreeting ? '(인사말 중)' : '';
+        addBubble({
+          role: 'system',
+          text: `⚡ 끼어들기 감지 ${label} ${elapsed}`.replace(/\s+/g, ' ').trim(),
+        });
+        break;
+      }
       case 'tool_call':
         addBubble({
           role: 'tool',

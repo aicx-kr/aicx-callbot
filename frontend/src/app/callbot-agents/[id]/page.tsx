@@ -12,6 +12,7 @@ import {
 import { api, fetcher } from '@/lib/api';
 import { useToast } from '@/components/Toast';
 import { BranchesFlowView } from '@/components/BranchesFlowView';
+import { DTMFActionEditor } from '@/components/DTMFActionEditor';
 import type { CallbotAgent, CallbotMembership, Bot, Branch } from '@/lib/types';
 
 
@@ -43,7 +44,17 @@ export default function CallbotAgentPage({ params }: { params: Promise<{ id: str
         name: form.name, voice: form.voice, greeting: form.greeting,
         language: form.language, llm_model: form.llm_model,
         pronunciation_dict: form.pronunciation_dict,
+        // AICC-910 신규
+        tts_pronunciation: form.tts_pronunciation,
+        stt_keywords: form.stt_keywords,
         dtmf_map: form.dtmf_map,
+        greeting_barge_in: form.greeting_barge_in,
+        idle_prompt_ms: form.idle_prompt_ms,
+        idle_terminate_ms: form.idle_terminate_ms,
+        idle_prompt_text: form.idle_prompt_text,
+        tts_speaking_rate: form.tts_speaking_rate,
+        tts_pitch: form.tts_pitch,
+        llm_thinking_budget: form.llm_thinking_budget,
       });
       await mutate();
       setDirty(false);
@@ -254,25 +265,119 @@ export default function CallbotAgentPage({ params }: { params: Promise<{ id: str
           )}
         </Section>
 
-        {/* 발음 사전 */}
-        <Section title="발음 사전" subtitle='예: "MRT" → "엠알티". 영문·약어·고유명사 등 TTS가 어색하게 읽는 경우 교정.'>
+        {/* AICC-910 (a) — Barge-in 옵션 */}
+        <Section title="음성 동작 — Barge-in" subtitle="사용자가 봇 발화 중 끼어들 때 즉시 봇을 멈출지 (인사말 한정).">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={Boolean(form.greeting_barge_in)}
+              onChange={(e) => set('greeting_barge_in', e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span>인사말 중 끼어들기 허용 (기본 OFF — 사용자가 인사말 끝까지 듣게 함)</span>
+          </label>
+        </Section>
+
+        {/* AICC-910 (b) — 무응답 자동 종료 */}
+        <Section title="무응답 자동 종료" subtitle="침묵 시 자동 재안내 + 누적 침묵 시 통화 종료.">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="재안내 임계 (ms)">
+              <input
+                type="number"
+                value={form.idle_prompt_ms ?? 7000}
+                onChange={(e) => set('idle_prompt_ms', Number(e.target.value) || 0)}
+                className={inputCls}
+                min={0}
+              />
+            </Field>
+            <Field label="자동 종료 임계 (ms)">
+              <input
+                type="number"
+                value={form.idle_terminate_ms ?? 15000}
+                onChange={(e) => set('idle_terminate_ms', Number(e.target.value) || 0)}
+                className={inputCls}
+                min={0}
+              />
+            </Field>
+          </div>
+          <div className="mt-2">
+            <Field label="재안내 멘트">
+              <input
+                value={form.idle_prompt_text ?? ''}
+                onChange={(e) => set('idle_prompt_text', e.target.value)}
+                placeholder="여보세요?"
+                className={inputCls}
+              />
+            </Field>
+          </div>
+          <div className="text-[11px] text-ink-400 dark:text-ink-500 mt-1.5">
+            💡 0 이하면 비활성. 권장: 재안내 7000 / 종료 15000.
+          </div>
+        </Section>
+
+        {/* AICC-910 (e) — TTS 발화 속도 / 피치 */}
+        <Section title="음성 출력 — 속도 / 피치" subtitle="TTS 합성 시 적용. 봇별 음색 보정.">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label={`발화 속도 (${(form.tts_speaking_rate ?? 1.0).toFixed(2)}x)`}>
+              <input
+                type="range"
+                min={0.5}
+                max={2.0}
+                step={0.05}
+                value={form.tts_speaking_rate ?? 1.0}
+                onChange={(e) => set('tts_speaking_rate', Number(e.target.value))}
+                className="w-full"
+              />
+            </Field>
+            <Field label={`피치 (${(form.tts_pitch ?? 0).toFixed(1)} st)`}>
+              <input
+                type="range"
+                min={-20}
+                max={20}
+                step={0.5}
+                value={form.tts_pitch ?? 0}
+                onChange={(e) => set('tts_pitch', Number(e.target.value))}
+                className="w-full"
+              />
+            </Field>
+          </div>
+        </Section>
+
+        {/* AICC-910 (f2) — LLM thinking budget */}
+        <Section
+          title="LLM thinking budget"
+          subtitle="Gemini 2.5+ 의 추론 토큰 예산. Off 가 가장 빠르지만 복잡한 판단은 정확도 손해."
+        >
+          <ThinkingBudgetControl
+            value={form.llm_thinking_budget ?? null}
+            onChange={(v) => set('llm_thinking_budget', v)}
+          />
+        </Section>
+
+        {/* AICC-910 (d) — 발음사전 분리: TTS 치환 */}
+        <Section title="TTS 발음 치환" subtitle='TTS 가 어색하게 읽는 약어·고유명사 교정. 예: "MRT" → "엠알티".'>
           <KVEditor
-            data={(form.pronunciation_dict as Record<string, string>) ?? {}}
-            onChange={(d) => set('pronunciation_dict', d)}
+            data={(form.tts_pronunciation as Record<string, string>) ?? {}}
+            onChange={(d) => set('tts_pronunciation', d)}
             keyPlaceholder="원문 (FTU4T6)"
             valuePlaceholder="발음 (에프-티-유-사-티-육)"
             addLabel="+ 발음 추가"
           />
         </Section>
 
-        {/* DTMF 키맵 */}
-        <Section title="DTMF 키맵" subtitle="전화 키패드 입력 → 분기/액션 매핑.">
-          <KVEditor
-            data={(form.dtmf_map as Record<string, string>) ?? {}}
+        {/* AICC-910 (d) — STT phrase hint */}
+        <Section title="STT 도메인 키워드" subtitle="음성 인식 시 우선 후보로 끌어올릴 도메인 단어 (boost ~10).">
+          <KeywordsEditor
+            data={(form.stt_keywords as string[]) ?? []}
+            onChange={(arr) => set('stt_keywords', arr)}
+          />
+        </Section>
+
+        {/* AICC-910 (c) — DTMF 키맵 (신규 스키마) */}
+        <Section title="DTMF 키맵" subtitle="전화 키패드 입력 → 분기/액션 매핑. 4 종 액션 지원.">
+          <DTMFActionEditor
+            data={(form.dtmf_map as Record<string, import('@/lib/types').DTMFAction>) ?? {}}
             onChange={(d) => set('dtmf_map', d)}
-            keyPlaceholder="키 (1)"
-            valuePlaceholder="액션 / 분기명 (예약 변경)"
-            addLabel="+ DTMF 매핑 추가"
           />
         </Section>
       </div>
@@ -299,6 +404,89 @@ function Field({ icon, label, children }: { icon?: React.ReactNode; label: strin
         {icon}{label}
       </label>
       {children}
+    </div>
+  );
+}
+
+function KeywordsEditor({ data, onChange }: { data: string[]; onChange: (next: string[]) => void }) {
+  function update(idx: number, v: string) {
+    const next = [...data];
+    next[idx] = v;
+    onChange(next);
+  }
+  function remove(idx: number) {
+    onChange(data.filter((_, i) => i !== idx));
+  }
+  function add() {
+    onChange([...data, '']);
+  }
+  return (
+    <div className="space-y-1.5">
+      {data.map((kw, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <input
+            value={kw}
+            onChange={(e) => update(i, e.target.value)}
+            placeholder="키워드 (예: Awarefit, 환불, 예약)"
+            className={clsx(inputCls, 'flex-1')}
+          />
+          <button onClick={() => remove(i)} className="p-1 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      ))}
+      <button onClick={add} className="flex items-center gap-1 text-sm text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/30 px-3 py-1.5 rounded mt-1">
+        <Plus className="w-3.5 h-3.5" /> + 키워드 추가
+      </button>
+    </div>
+  );
+}
+
+function ThinkingBudgetControl({
+  value,
+  onChange,
+}: {
+  value: number | null;
+  onChange: (next: number | null) => void;
+}) {
+  const mode = value === null ? 'default' : value === 0 ? 'off' : value === -1 ? 'dynamic' : 'custom';
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <Field label="모드">
+        <select
+          value={mode}
+          onChange={(e) => {
+            switch (e.target.value) {
+              case 'default': onChange(null); break;
+              case 'off': onChange(0); break;
+              case 'dynamic': onChange(-1); break;
+              case 'custom': onChange(typeof value === 'number' && value > 0 ? value : 1024); break;
+            }
+          }}
+          className={inputCls}
+        >
+          <option value="default">기본 (모델 자동, 권장)</option>
+          <option value="off">Off (TTFF 최소)</option>
+          <option value="dynamic">Dynamic (명시)</option>
+          <option value="custom">사용자 지정 (토큰 한도)</option>
+        </select>
+      </Field>
+      {mode === 'custom' && (
+        <Field label="토큰 한도">
+          <input
+            type="number"
+            min={1}
+            max={32768}
+            step={128}
+            value={value ?? 1024}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              onChange(Number.isFinite(n) && n > 0 ? n : 1);
+            }}
+            className={inputCls}
+          />
+        </Field>
+      )}
     </div>
   );
 }

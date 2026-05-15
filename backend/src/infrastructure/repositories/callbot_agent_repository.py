@@ -24,7 +24,16 @@ def _to_domain(row: models.CallbotAgent) -> CallbotAgent:
         language=row.language,
         llm_model=row.llm_model,
         pronunciation_dict=row.pronunciation_dict or {},
+        tts_pronunciation=row.tts_pronunciation or {},
+        stt_keywords=row.stt_keywords or [],
         dtmf_map=row.dtmf_map or {},
+        greeting_barge_in=bool(row.greeting_barge_in),
+        idle_prompt_ms=int(row.idle_prompt_ms if row.idle_prompt_ms is not None else 7000),
+        idle_terminate_ms=int(row.idle_terminate_ms if row.idle_terminate_ms is not None else 15000),
+        idle_prompt_text=row.idle_prompt_text or "여보세요?",
+        tts_speaking_rate=float(row.tts_speaking_rate if row.tts_speaking_rate is not None else 1.0),
+        tts_pitch=float(row.tts_pitch if row.tts_pitch is not None else 0.0),
+        llm_thinking_budget=row.llm_thinking_budget,
         memberships=[
             CallbotMembership(
                 id=m.id,
@@ -74,7 +83,16 @@ class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
                 voice=agent.voice, greeting=agent.greeting,
                 language=agent.language, llm_model=agent.llm_model,
                 pronunciation_dict=agent.pronunciation_dict,
-                dtmf_map=agent.dtmf_map,
+                tts_pronunciation=agent.tts_pronunciation,
+                stt_keywords=agent.stt_keywords,
+                dtmf_map=agent.normalized_dtmf_map(),
+                greeting_barge_in=agent.greeting_barge_in,
+                idle_prompt_ms=agent.idle_prompt_ms,
+                idle_terminate_ms=agent.idle_terminate_ms,
+                idle_prompt_text=agent.idle_prompt_text,
+                tts_speaking_rate=agent.normalized_speaking_rate(),
+                tts_pitch=agent.normalized_pitch(),
+                llm_thinking_budget=agent.normalized_thinking_budget(),
             )
             self._db.add(row)
             await self._db.flush()
@@ -88,7 +106,16 @@ class SqlAlchemyCallbotAgentRepository(CallbotAgentRepository):
             row.language = agent.language
             row.llm_model = agent.llm_model
             row.pronunciation_dict = agent.pronunciation_dict
-            row.dtmf_map = agent.dtmf_map
+            row.tts_pronunciation = agent.tts_pronunciation
+            row.stt_keywords = agent.stt_keywords
+            row.dtmf_map = agent.normalized_dtmf_map()
+            row.greeting_barge_in = agent.greeting_barge_in
+            row.idle_prompt_ms = agent.idle_prompt_ms
+            row.idle_terminate_ms = agent.idle_terminate_ms
+            row.idle_prompt_text = agent.idle_prompt_text
+            row.tts_speaking_rate = agent.normalized_speaking_rate()
+            row.tts_pitch = agent.normalized_pitch()
+            row.llm_thinking_budget = agent.normalized_thinking_budget()
 
         # memberships 동기화: id로 매칭, 신규는 추가, 사라진 것은 제거, 기존은 업데이트
         existing_by_id = {m.id: m for m in row.memberships if m.id is not None}
