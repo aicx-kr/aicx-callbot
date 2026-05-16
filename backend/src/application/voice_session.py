@@ -1303,7 +1303,14 @@ class VoiceSession:
                 response_chars=sum(len(s) for s in sentences),
             )
         finally:
-            pass
+            # barge-in break (listening state / uncommitted sentence) 경로에서 stream_iter 가 닫히지
+            # 않으면 LLM provider 가 백그라운드에서 계속 토큰 생성 — 비용/race 위험. tool_call 분기는
+            # 이미 명시 aclose() 호출하므로 본 finally 는 정상 종료/Exception/CancelledError/break 모두
+            # 커버하는 안전망.
+            try:
+                await stream_iter.aclose()
+            except Exception:
+                pass
 
         # signal_tail: 시그널 JSON으로 의심되어 TTS 스킵된 chunk들의 누적. parse_signal_and_strip 입력.
         # streaming으로 emit·TTS된 sentences는 다시 처리하지 않음 — 중복 방지.
@@ -2093,7 +2100,10 @@ class VoiceSession:
                         self.state.first_audio_t = _time.monotonic()
                     await self.send_bytes(pcm)
             except asyncio.CancelledError:
-                return
+                # propagate — speech_task 가 CancelledError 로 종료해야 outer `await speech_task` 가
+                # 예외를 받음. `return` 으로 삼키면 task 가 정상 종료로 보여 commit 판정 어긋남.
+                # 보고: CodeRabbit PR #13 (https://github.com/aicx-kr/aicx-callbot/pull/13).
+                raise
             except Exception as e:
                 logger.exception("TTS error", error_type=type(e).__name__)
                 await self.send_json({"type": "error", "where": "tts", "message": str(e)})
