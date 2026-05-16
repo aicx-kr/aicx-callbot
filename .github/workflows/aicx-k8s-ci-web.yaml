@@ -61,11 +61,15 @@ jobs:
 
       - name: Resolve BACKEND_URL by environment
         id: backend_url
+        # Next.js SSR (rewrites / 서버사이드 fetch) 가 호출할 backend. cluster 내부 service DNS 로
+        # 직결 — 외부 ALB / cert 안 거침. memory `feedback_nextjs_build_arg` 에 따라 build-arg 로
+        # 박아둠 (runtime ENV 만으론 next.config.js 평가 시점 미스매치 위험).
+        # 브라우저 측 (WS / fetch) 는 `backendWsUrl()` 이 same-origin 사용 — 별도 env 불필요.
         run: |
           if [ "${{ inputs.environment }}" = "prod" ]; then
-            echo "url=https://callbot.aicx.kr" >> $GITHUB_OUTPUT
+            echo "url=http://aicx-callbot-server.aicx-prod-aicx-callbot.svc.cluster.local:8765" >> $GITHUB_OUTPUT
           else
-            echo "url=https://callbot.dev-aicx.kr" >> $GITHUB_OUTPUT
+            echo "url=http://aicx-callbot-server.aicx-dev-aicx-callbot.svc.cluster.local:8765" >> $GITHUB_OUTPUT
           fi
 
       - name: Docker build and push
@@ -77,7 +81,6 @@ jobs:
           tags: ${{ env.ECR_REPOSITORY }}:${{ needs.generate-tag.outputs.tag }}
           build-args: |
             BACKEND_URL=${{ steps.backend_url.outputs.url }}
-            NEXT_PUBLIC_BACKEND_URL=${{ steps.backend_url.outputs.url }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
 
