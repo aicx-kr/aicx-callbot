@@ -192,7 +192,11 @@ def _make_session(*, callbot: CallbotAgent | None = None) -> VoiceSession:
 
 @pytest.mark.asyncio
 async def test_barge_in_cancels_speech_task_within_200ms():
-    """speaking 중 _on_speech_start → speech_task.cancel() 호출. 200ms 이내."""
+    """speaking 중 _trigger_barge_in → speech_task.cancel() 호출. 200ms 이내.
+
+    실제 흐름: VAD start → _on_speech_start (STT spawn 만) → STT 첫 partial → _trigger_barge_in.
+    본 단위 테스트는 cancel 책임 분리만 검증 — 신호 경로는 통합 테스트 영역.
+    """
     sess = _make_session()
     sess.state.state = "speaking"
     # 가짜 TTS task — 1초간 sleep
@@ -200,7 +204,7 @@ async def test_barge_in_cancels_speech_task_within_200ms():
     sess.state.speech_task = fake_task
 
     t0 = time.monotonic()
-    await sess._on_speech_start()
+    await sess._trigger_barge_in()
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     assert elapsed_ms < 200, f"barge-in took {elapsed_ms:.0f}ms (>= 200ms)"
@@ -233,7 +237,7 @@ async def test_greeting_barge_in_disabled_skips_cancel():
 
 @pytest.mark.asyncio
 async def test_greeting_barge_in_enabled_cancels():
-    """greeting_barge_in=True + in_greeting=True → cancel 실행."""
+    """greeting_barge_in=True + in_greeting=True → cancel 실행 ( `_trigger_barge_in` 단계)."""
     cb = CallbotAgent(id=1, tenant_id=1, name="cb", greeting_barge_in=True)
     sess = _make_session(callbot=cb)
     sess.state.state = "speaking"
@@ -241,7 +245,7 @@ async def test_greeting_barge_in_enabled_cancels():
     fake_task = asyncio.create_task(asyncio.sleep(1.0))
     sess.state.speech_task = fake_task
 
-    await sess._on_speech_start()
+    await sess._trigger_barge_in()
     await asyncio.sleep(0)
     assert fake_task.cancelled() or fake_task.done()
 
@@ -257,7 +261,7 @@ async def test_barge_in_emits_ws_event_with_elapsed_ms():
     fake_task = asyncio.create_task(asyncio.sleep(1.0))
     sess.state.speech_task = fake_task
 
-    await sess._on_speech_start()
+    await sess._trigger_barge_in()
 
     # send_json 호출 중 barge_in 메시지가 있는지
     barge_calls = [
@@ -281,7 +285,7 @@ async def test_barge_in_in_greeting_payload_when_allowed():
     fake_task = asyncio.create_task(asyncio.sleep(1.0))
     sess.state.speech_task = fake_task
 
-    await sess._on_speech_start()
+    await sess._trigger_barge_in()
 
     barge_calls = [
         c.args[0] for c in sess.send_json.call_args_list
@@ -794,7 +798,7 @@ async def test_barge_in_records_tracer_span():
     sess.state.speech_task = fake_task
 
     try:
-        await sess._on_speech_start()
+        await sess._trigger_barge_in()
     finally:
         if not fake_task.done():
             fake_task.cancel()
