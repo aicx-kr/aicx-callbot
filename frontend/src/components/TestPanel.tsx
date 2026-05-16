@@ -218,6 +218,30 @@ export function TestPanel({ bot, voiceModeAvailable }: { bot: Bot; voiceModeAvai
       case 'handover':
         addBubble({ role: 'system', text: '👤 상담사 전환' });
         break;
+      case 'speak_end': {
+        // 서버가 turn 발화 PCM 송출을 마쳤음을 알림. 클라는 playbackTimeRef.current (PCM 큐의 끝
+        // 시각, AudioContext 시계) 기준으로 실제 재생 완료 시점을 추산해 playback_done 회신.
+        // 서버는 그 시점에 idle 타이머 baseline 갱신 — 클라 버퍼 잔여 재생 시간 만큼 일찍 prompt 가
+        // 발화되던 버그를 해소.
+        const id = String(msg.id || '');
+        if (!id) break;
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) break;
+        const ctx = audioCtxRef.current;
+        // browser 모드는 백엔드 TTS PCM 을 무시 (speechSynthesis 사용) — 즉시 ack 로 처리.
+        if (!ctx || modeRef.current === 'browser') {
+          ws.send(JSON.stringify({ type: 'playback_done', id }));
+          break;
+        }
+        const remainingMs = Math.max(0, (playbackTimeRef.current - ctx.currentTime) * 1000);
+        setTimeout(() => {
+          const s = wsRef.current;
+          if (s && s.readyState === WebSocket.OPEN) {
+            s.send(JSON.stringify({ type: 'playback_done', id }));
+          }
+        }, remainingMs);
+        break;
+      }
       case 'error':
         addBubble({ role: 'system', text: `⚠ ${msg.where}: ${msg.message}` });
         break;
