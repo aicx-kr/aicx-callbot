@@ -25,6 +25,6 @@ ENV PATH="/app/.venv/bin:$PATH"
 # stdout/stderr 즉시 flush — 운영 로그 실시간 노출 위해
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 8765
+EXPOSE 8080
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8765", "--no-access-log"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]

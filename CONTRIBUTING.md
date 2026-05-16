@@ -131,7 +131,7 @@ domain (가장 안쪽 — 비즈니스 규칙)
 # Backend
 cd backend
 python -c "from src.application.voice_session import VoiceSession; print('import OK')"
-curl -sf http://localhost:8765/api/health
+curl -sf http://localhost:8080/api/health
 python tests/test_<changed_domain>.py  # 도메인 변경 시
 
 # Frontend

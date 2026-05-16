@@ -10,7 +10,7 @@
 
 1. **현재 상태 파악**
    - `AUTO_LOOP_LOG.md` 마지막 사이클 확인 → 다음 카테고리 결정 (로테이션: 테스트·성능 → UI → 구조 → 테스트·성능…)
-   - 서버 상태 확인: `curl -sf http://localhost:8765/api/health` 실패 시 재시작 (`cd backend && PORT=8765 ./run.sh &`)
+   - 서버 상태 확인: `curl -sf http://localhost:8080/api/health` 실패 시 재시작 (`cd backend && PORT=8080 ./run.sh &`)
 
 2. **타깃 1개 선정** (해당 카테고리 안에서)
    - 테스트·성능: 누락된 endpoint 테스트, 느린 query, 캐시 누수, 메모리 누적, 불필요 fetch
@@ -25,9 +25,9 @@
 4. **검증** (필수 — 통과 못 하면 롤백)
    ```bash
    # Backend
-   curl -sf http://localhost:8765/api/health || echo "BACKEND DOWN"
-   curl -sf http://localhost:8765/api/bots | python3 -c "import sys,json; print(len(json.load(sys.stdin)))"
-   curl -sf "http://localhost:8765/api/skills?bot_id=1" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))"
+   curl -sf http://localhost:8080/api/health || echo "BACKEND DOWN"
+   curl -sf http://localhost:8080/api/bots | python3 -c "import sys,json; print(len(json.load(sys.stdin)))"
+   curl -sf "http://localhost:8080/api/skills?bot_id=1" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))"
 
    # Frontend (router redirects → 307 OK)
    curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/bots/1/persona

@@ -1,6 +1,6 @@
 # frontend — Next.js 콘솔 (port 3000)
 
-Next.js 15 App Router + React 19 + Tailwind + SWR. 백엔드(`port 8765`)가 먼저 떠 있어야 함.
+Next.js 15 App Router + React 19 + Tailwind + SWR. 백엔드(`port 8080`)가 먼저 떠 있어야 함.
 
 ```bash
 npm install

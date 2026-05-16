@@ -8,9 +8,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     host: str = "0.0.0.0"
-    # 기본 8765 — frontend/next.config.js의 API_TARGET 기본값과 일치.
-    # 다른 포트로 띄울 땐 PORT 환경변수로 override + frontend BACKEND_URL도 함께 맞춰야 함.
-    port: int = 8765
+    # 기본 8080 — 회사 EKS 노드 SG 의 ALB inbound rule 이 3000-8080 범위라 그 안의 표준 포트로 통일.
+    # frontend/next.config.js 의 API_TARGET 기본값과 일치. 다른 포트로 띄울 땐 PORT 환경변수 override
+    # + frontend BACKEND_URL 도 함께 맞춰야 함.
+    port: int = 8080
     # Async URL — postgresql+asyncpg://... 또는 sqlite+aiosqlite:///./callbot.db
     database_url: str = "sqlite+aiosqlite:///./callbot.db"
 

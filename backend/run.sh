@@ -24,5 +24,5 @@ if [ ! -f .env ]; then
   echo "[setup] .env 생성 (기본값). GCP 사용 시 키 입력 필요."
 fi
 
-echo "[run] uvicorn 시작 → http://localhost:${PORT:-8765}/"
+echo "[run] uvicorn 시작 → http://localhost:${PORT:-8080}/"
 exec python main.py

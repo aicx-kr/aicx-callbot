@@ -31,8 +31,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 1. 기존 dev server 정리 (사용자 backend/frontend 떠있으면 port 충돌)
-echo "[1/6] :8765 / :3000 점유 프로세스 정리 + e2e.db 초기화"
-lsof -ti:8765 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+echo "[1/6] :8080 / :3000 점유 프로세스 정리 + e2e.db 초기화"
+lsof -ti:8080 2>/dev/null | xargs -r kill -9 2>/dev/null || true
 lsof -ti:3000 2>/dev/null | xargs -r kill -9 2>/dev/null || true
 sleep 1
 
@@ -42,13 +42,13 @@ export DATABASE_URL="sqlite+aiosqlite:///./e2e.db"
 
 # 2. backend 띄우기 (alembic upgrade + seed 자동)
 echo "[2/6] backend 시작 → $BACKEND_LOG"
-uv run uvicorn main:app --host 127.0.0.1 --port 8765 --no-access-log \
+uv run uvicorn main:app --host 127.0.0.1 --port 8080 --no-access-log \
   >"$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 
 BACKEND_READY=0
 for i in $(seq 1 60); do
-  if curl -sf http://127.0.0.1:8765/api/health >/dev/null 2>&1; then
+  if curl -sf http://127.0.0.1:8080/api/health >/dev/null 2>&1; then
     echo "       backend ready (~${i}s)"
     BACKEND_READY=1
     break
@@ -73,8 +73,8 @@ uv run python scripts/e2e_seed.py | tee "$SEED_OUT"
 # 4. frontend 띄우기
 echo "[4/6] frontend 시작 → $FRONTEND_LOG"
 cd "$FRONTEND_DIR"
-export BACKEND_URL="http://127.0.0.1:8765"
-export NEXT_PUBLIC_BACKEND_URL="http://127.0.0.1:8765"
+export BACKEND_URL="http://127.0.0.1:8080"
+export NEXT_PUBLIC_BACKEND_URL="http://127.0.0.1:8080"
 pnpm dev >"$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
 
