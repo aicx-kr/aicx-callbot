@@ -615,6 +615,12 @@ class VoiceSession:
         if self._closed:
             return
         events = self.vad.feed(chunk)
+        if events:  # DEBUG-BARGE-IN — VAD 가 무엇이라도 emit 했을 때만 로그 (chunk 마다 찍으면 너무 verbose)
+            logger.info(
+                "DEBUG-BARGE-IN VAD events",
+                kinds=[e.kind for e in events],
+                session_state=self.state.state,
+            )
         for ev in events:
             if ev.kind == "start":
                 await self._on_speech_start()
@@ -728,23 +734,38 @@ class VoiceSession:
 
     # ---------- 내부 로직 ----------
     async def _on_speech_start(self) -> None:
+        # DEBUG-BARGE-IN: 진입 시 항상 찍어 — 어느 분기로 빠지는지 추적용
+        _st = self.state.speech_task
+        logger.info(
+            "DEBUG-BARGE-IN _on_speech_start entry",
+            session_state=self.state.state,
+            in_greeting=self.state.in_greeting,
+            has_speech_task=_st is not None,
+            speech_task_done=(_st.done() if _st is not None else None),
+        )
         # Echo grace — idle 상태에서 봇 발화 종료 직후 들어온 speech_start는 잔향으로 간주, 무시.
         # (speaking 중 barge-in은 grace 적용 안 함 — 진짜 사용자 끼어들기 위해)
         if self.state.state == "idle" and self.state.last_speak_end_t > 0:
             import time as _time
             elapsed = _time.monotonic() - self.state.last_speak_end_t
             if elapsed < _ECHO_GRACE_S:
-                logger.debug("speech_start ignored — within echo grace", elapsed_ms=int(elapsed * 1000))
+                logger.info("DEBUG-BARGE-IN ignored — echo grace", elapsed_ms=int(elapsed * 1000))  # DEBUG-BARGE-IN
                 return
         # (a) AICC-910 — 인사말 동안 barge-in 가드. greeting_barge_in=False(기본)면 cancel skip.
         if self.state.in_greeting:
             cb = self._callbot()
             allow = bool(cb.greeting_barge_in) if cb is not None else False
             if not allow:
-                logger.debug("speech_start ignored — greeting_barge_in disabled")
+                logger.info("DEBUG-BARGE-IN ignored — greeting_barge_in disabled")  # DEBUG-BARGE-IN
                 return
         # barge-in: 봇이 말하는 중이면 즉시 중단 (TTS speech_task + STT 이전 task 둘 다 정리)
         if self.state.state == "speaking" and self.state.speech_task:
+            # DEBUG-BARGE-IN: cancel 분기 진입 — speech_task 상태 확인
+            logger.info(
+                "DEBUG-BARGE-IN cancel branch entered",
+                speech_task_done=self.state.speech_task.done(),
+                speech_task_cancelled=self.state.speech_task.cancelled(),
+            )
             import time as _time
             elapsed_ms: int | None = None
             if self.state.last_speak_start_t > 0:
@@ -767,7 +788,8 @@ class VoiceSession:
                     "in_greeting": in_greeting,
                     "elapsed_ms": elapsed_ms,
                 })
-                self.state.speech_task.cancel()
+                cancel_ret = self.state.speech_task.cancel()
+                logger.info("DEBUG-BARGE-IN speech_task.cancel() called", cancel_returned=cancel_ret)  # DEBUG-BARGE-IN
                 # playback ack 정리 — 클라가 보낼 playback_done 은 이제 무의미 (cancel 된 발화).
                 # 늦게 도착해도 id mismatch 로 무시되게 pending 클리어.
                 self.state.pending_speak_id = None
@@ -775,6 +797,13 @@ class VoiceSession:
                 if fb is not None and not fb.done():
                     fb.cancel()
                 self.state.playback_fallback_task = None
+        else:
+            # DEBUG-BARGE-IN: cancel 분기 못 들어감 — 왜?
+            logger.info(
+                "DEBUG-BARGE-IN cancel skipped",
+                session_state=self.state.state,
+                has_speech_task=self.state.speech_task is not None,
+            )
         # 이전 turn 의 STT task 가 살아 있으면 정리 — 새 audio_q 로 교체하므로 그대로 두면 leak.
         if self._stt_task and not self._stt_task.done():
             self._stt_task.cancel()
@@ -1244,6 +1273,7 @@ class VoiceSession:
                     # barge-in race 가드 — _on_speech_start 가 state="listening" 으로 전환 후
                     # cancel 신호 도착 전 다음 chunk 가 새는 케이스 차단.
                     if self.state.state == "listening":
+                        logger.info("DEBUG-BARGE-IN stream loop break — state==listening", sentences_so_far=len(sentences))  # DEBUG-BARGE-IN
                         break
                     if first_chunk is None:
                         first_chunk = chunk
@@ -1283,8 +1313,10 @@ class VoiceSession:
                             )
                             if not committed:
                                 # barge-in 으로 sentence cut — 다음 chunk 도 처리 안 함.
+                                logger.info("DEBUG-BARGE-IN stream loop break — sentence uncommitted", sentences_so_far=len(sentences))  # DEBUG-BARGE-IN
                                 break
                             sentences.append(chunk.text)
+                            logger.info("DEBUG-BARGE-IN sentence committed", idx=len(sentences) - 1, preview=chunk.text[:30])  # DEBUG-BARGE-IN
                 # stream 종료 — 마지막 partial(종결자 없는 buf)이 sentences에 합쳐졌을 수도 있음.
                 # GeminiLLM은 partial을 마지막 yield로 보내므로 위 루프에서 이미 들어옴.
                 # signal 파싱을 위해 누적 텍스트 + 만약 partial을 따로 받았다면 합치는 로직 필요 —
@@ -2137,11 +2169,13 @@ class VoiceSession:
         # 발견 경로: e2e_voice_sim.py 의 barge_in 시나리오, 2026-05-15.
         self.state.speech_task = asyncio.create_task(speak_task())
         await self.set_state("speaking")
+        logger.info("DEBUG-BARGE-IN _speak started", text_preview=text[:30])  # DEBUG-BARGE-IN
         completed = True
         try:
             await self.state.speech_task
         except asyncio.CancelledError:
             completed = False
+            logger.info("DEBUG-BARGE-IN _speak got CancelledError (barge-in cut)", text_preview=text[:30])  # DEBUG-BARGE-IN
             # 외부 task 가 cancel 중인 경우엔 신호를 위로 전파 — 호출자에서 partial save 후 raise.
             # asyncio.current_task().cancelling() 은 Python 3.11+ — 미만 환경은 보수적으로 그대로 propagate.
             current = asyncio.current_task()
