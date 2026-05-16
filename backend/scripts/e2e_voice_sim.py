@@ -8,6 +8,13 @@
   5) GET /api/calls/{session_id}/traces 호출 → tracer span 확인
   6) 결과 JSON stdout 출력
 
+클라이언트 모방:
+  - Web Audio API 버퍼 재생을 시뮬레이션 — PCM bytes 도착 시각·길이로 누적 재생 종료 시각을
+    계산하고, 서버 `speak_end` marker 수신 시 그 종료 시각까지 sleep 후 `playback_done` 회신.
+    실 frontend (TestPanel.tsx playPCM) 와 동일 의미.
+  - 이 모방 없이 즉시 ack 보내면 서버측 idle 타이머 baseline 이 클라 재생 완료 시점이 아닌
+    PCM flush 완료 시점으로 잡혀 user-facing idle prompt timing 버그를 e2e 가 못 잡음.
+
 실행:
   cd backend && uv run python scripts/e2e_voice_sim.py \\
       --bot-id 2 --scenario basic --wav refund
@@ -20,6 +27,8 @@ argparse:
   --timeout       총 통화 timeout 초 (기본 30)
 
 출력 (stdout): {"ok": bool, "session_id": int, "events": [...], "transcripts": [...], "traces": [...]}
+  events 의 PCM 청크는 `_tts_chunk {bytes, t, playback_end_at}`, JSON 메시지는 `_recv_t`
+  필드로 수신 시각이 stamp 된다. verifier 가 timing assertion 에 활용.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time as _time
 import wave
 from pathlib import Path
 
@@ -89,18 +99,70 @@ async def run_scenario(
     # 인사말 완료(speaking → idle 전이) 감지용
     greeting_done = asyncio.Event()
 
+    # Web Audio API 버퍼 모방 — frontend/TestPanel.tsx 의 playPCM 이 `src.start(when)` 으로
+    # 미래 시각에 스케줄하고 `playbackTimeRef.current = when + buf.duration` 로 큐 끝 시각을
+    # 추적. 본 sim 도 동일 패턴으로 PCM 의 누적 재생 종료 시각을 추적해, `speak_end` 수신 시
+    # `(playback_end_at - now)` 만큼 sleep 후 `playback_done` 회신.
+    # 빠진 사용자 체감 timing 으로 인한 idle prompt 조기 발화 같은 버그를 e2e 단계에서
+    # 재현·검출하기 위한 인프라.
+    playback_end_at = 0.0  # monotonic 초 — 현재 PCM 큐가 다 비는 시각
+    pending_ack_tasks: list[asyncio.Task] = []
+
+    async def _emit_playback_done(ws, speak_id: str, delay_s: float):
+        if delay_s > 0:
+            try:
+                await asyncio.sleep(delay_s)
+            except asyncio.CancelledError:
+                return
+        try:
+            await ws.send(json.dumps({"type": "playback_done", "id": speak_id}))
+            events.append({
+                "type": "_playback_done_sent",
+                "id": speak_id,
+                "delay_s": delay_s,
+                "t": _time.monotonic(),
+            })
+        except (websockets.ConnectionClosed, OSError):
+            pass
+
     async def recv_with_greeting_signal(ws):
+        nonlocal playback_end_at
         seen_speaking = False
         try:
             async for msg in ws:
                 if isinstance(msg, (bytes, bytearray)):
-                    events.append({"type": "_tts_chunk", "bytes": len(msg)})
+                    # PCM 도착 — 버퍼 끝 시각 advance.
+                    # duration = bytes / (sample_rate * 16-bit) — 16kHz mono 가정 (현 프로토콜).
+                    duration_s = len(msg) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+                    now = _time.monotonic()
+                    # 버퍼가 비어있으면 now 부터 재생 시작, 아직 재생 중이면 그 뒤에 append.
+                    playback_end_at = max(playback_end_at, now) + duration_s
+                    events.append({
+                        "type": "_tts_chunk",
+                        "bytes": len(msg),
+                        "t": now,
+                        "playback_end_at": playback_end_at,
+                    })
                     continue
                 try:
                     obj = json.loads(msg)
                 except json.JSONDecodeError:
                     continue
-                events.append(obj)
+                # 수신 시각 stamp — verifier 가 timing assertion 에 활용.
+                events.append({**obj, "_recv_t": _time.monotonic()})
+
+                if obj.get("type") == "speak_end":
+                    # 서버가 PCM 송출 완료 marker 송신 — 클라(=sim) 가 자기 버퍼 재생 끝나는 시점에
+                    # `playback_done` 회신. 서버는 그 시점에 `_last_activity_t` 갱신.
+                    # delay = max(0, playback_end_at - now). 0 이면 즉시 회신.
+                    speak_id = obj.get("id")
+                    if speak_id:
+                        now = _time.monotonic()
+                        remaining = max(0.0, playback_end_at - now)
+                        pending_ack_tasks.append(
+                            asyncio.create_task(_emit_playback_done(ws, speak_id, remaining))
+                        )
+
                 if obj.get("type") == "transcript":
                     transcripts.append({"role": obj.get("role"), "text": obj.get("text", "")})
                 if obj.get("type") == "state":
@@ -111,6 +173,11 @@ async def run_scenario(
                         greeting_done.set()
         except websockets.ConnectionClosed:
             pass
+        finally:
+            # 미회신 playback_done task 정리 (timeout 등으로 sim 이 먼저 빠지는 경우)
+            for t in pending_ack_tasks:
+                if not t.done():
+                    t.cancel()
 
     async with websockets.connect(ws_uri) as ws:
         recv_task = asyncio.create_task(recv_with_greeting_signal(ws))
