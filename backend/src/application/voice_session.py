@@ -2123,7 +2123,8 @@ class VoiceSession:
                     total_pcm_bytes += len(pcm)
             except asyncio.CancelledError:
                 # propagate — speech_task 가 CancelledError 로 종료해야 outer `await speech_task` 가
-                # 예외를 받음. `return` 으로 삼키면 task 가 정상 종료로 보여 commit 판정 어긋남.
+                # 예외를 받음. `return` 으로 삼키면 task 가 정상 종료로 보여 (a) commit 판정 어긋남,
+                # (b) speak_end marker 가 송신되어 잘못된 playback_done 이 baseline 갱신.
                 # 보고: CodeRabbit PR #13 (https://github.com/aicx-kr/aicx-callbot/pull/13).
                 raise
             except Exception as e:

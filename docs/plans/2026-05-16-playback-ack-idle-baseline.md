@@ -3,7 +3,7 @@
 > 작성일: 2026-05-16
 > 상태: **TODO** · 우선순위: **High** · 담당: 홍동완
 > 관련: [[2026-05-16-barge-in-llm-stream-cancel]] — voice_session.py / ws/voice.py 동시 편집 충돌 가능
-
+>
 > **문서 성격**: 설계 산출물. 사용자 검토 후 빌드.
 
 ---
