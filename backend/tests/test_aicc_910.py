@@ -192,7 +192,11 @@ def _make_session(*, callbot: CallbotAgent | None = None) -> VoiceSession:
 
 @pytest.mark.asyncio
 async def test_barge_in_cancels_speech_task_within_200ms():
-    """speaking 중 _on_speech_start → speech_task.cancel() 호출. 200ms 이내."""
+    """speaking 중 _trigger_barge_in → speech_task.cancel() 호출. 200ms 이내.
+
+    실제 흐름: VAD start → _on_speech_start (STT spawn 만) → STT 첫 partial → _trigger_barge_in.
+    본 단위 테스트는 cancel 책임 분리만 검증 — 신호 경로는 통합 테스트 영역.
+    """
     sess = _make_session()
     sess.state.state = "speaking"
     # 가짜 TTS task — 1초간 sleep
@@ -200,7 +204,7 @@ async def test_barge_in_cancels_speech_task_within_200ms():
     sess.state.speech_task = fake_task
 
     t0 = time.monotonic()
-    await sess._on_speech_start()
+    await sess._trigger_barge_in()
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     assert elapsed_ms < 200, f"barge-in took {elapsed_ms:.0f}ms (>= 200ms)"
@@ -233,7 +237,7 @@ async def test_greeting_barge_in_disabled_skips_cancel():
 
 @pytest.mark.asyncio
 async def test_greeting_barge_in_enabled_cancels():
-    """greeting_barge_in=True + in_greeting=True → cancel 실행."""
+    """greeting_barge_in=True + in_greeting=True → cancel 실행 ( `_trigger_barge_in` 단계)."""
     cb = CallbotAgent(id=1, tenant_id=1, name="cb", greeting_barge_in=True)
     sess = _make_session(callbot=cb)
     sess.state.state = "speaking"
@@ -241,7 +245,7 @@ async def test_greeting_barge_in_enabled_cancels():
     fake_task = asyncio.create_task(asyncio.sleep(1.0))
     sess.state.speech_task = fake_task
 
-    await sess._on_speech_start()
+    await sess._trigger_barge_in()
     await asyncio.sleep(0)
     assert fake_task.cancelled() or fake_task.done()
 
@@ -257,7 +261,7 @@ async def test_barge_in_emits_ws_event_with_elapsed_ms():
     fake_task = asyncio.create_task(asyncio.sleep(1.0))
     sess.state.speech_task = fake_task
 
-    await sess._on_speech_start()
+    await sess._trigger_barge_in()
 
     # send_json 호출 중 barge_in 메시지가 있는지
     barge_calls = [
@@ -281,7 +285,7 @@ async def test_barge_in_in_greeting_payload_when_allowed():
     fake_task = asyncio.create_task(asyncio.sleep(1.0))
     sess.state.speech_task = fake_task
 
-    await sess._on_speech_start()
+    await sess._trigger_barge_in()
 
     barge_calls = [
         c.args[0] for c in sess.send_json.call_args_list
@@ -451,7 +455,10 @@ async def test_dtmf_closes_tracer_span_when_unmapped():
 async def test_speak_idle_prompt_preserves_baseline():
     """CodeRabbit 지적: prompt 발화 후 set_state("idle") 가 _start_idle_timer 를 통해
     _idle_prompt_emitted / _last_activity_t 를 리셋해서 "1회 prompt + 누적 silence terminate"
-    룰이 깨지던 문제 수정. _speak_idle_prompt 가 set_state 를 우회하고 baseline 보존."""
+    룰이 깨지던 문제 수정. _speak_idle_prompt 가 set_state 를 우회하고 baseline 보존.
+
+    idle_task 의 재spawn 책임은 _idle_loop 가 가짐 (자기 cancel 방지 시 caller 가 복원) —
+    여기서는 baseline 과 state 만 검증."""
     cb = CallbotAgent(id=1, tenant_id=1, name="cb")
     sess = _make_session(callbot=cb)
     sess._speak = AsyncMock()  # type: ignore
@@ -469,13 +476,6 @@ async def test_speak_idle_prompt_preserves_baseline():
     assert sess._last_activity_t == baseline_t, "last_activity_t 리셋되면 terminate 카운트 재시작"
     # state 는 idle 로 복귀
     assert sess.state.state == "idle"
-    # idle_task 가 재시작되었는지 (None 이 아닌 새 task)
-    assert sess.state.idle_task is not None
-    sess.state.idle_task.cancel()
-    try:
-        await sess.state.idle_task
-    except (asyncio.CancelledError, BaseException):
-        pass
 
 
 @pytest.mark.asyncio
@@ -794,7 +794,7 @@ async def test_barge_in_records_tracer_span():
     sess.state.speech_task = fake_task
 
     try:
-        await sess._on_speech_start()
+        await sess._trigger_barge_in()
     finally:
         if not fake_task.done():
             fake_task.cancel()

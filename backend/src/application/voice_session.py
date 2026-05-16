@@ -490,10 +490,17 @@ class VoiceSession:
                     self._idle_prompt_emitted = True
                     logger.event("call.idle_prompt", elapsed_ms=elapsed_ms, text_chars=len(prompt_text or ""))
                     if prompt_text:
+                        # 자기 cancel 방지: _speak_idle_prompt → _speak → set_state("speaking") 가
+                        # _cancel_idle_timer 를 호출하는데, self.state.idle_task = current task = self.
+                        # 자기 자신 cancel → CancelledError → _speak 도중 중단 → tts.synthesized 안 됨.
+                        # idle_task ref 를 None 으로 비워 cancel 시도가 noop 이 되게 한 뒤,
+                        # prompt 발화 끝나면 자기 자신을 다시 ref 로 복원해 polling 계속.
+                        self.state.idle_task = None
                         try:
                             await self._speak_idle_prompt(prompt_text)
                         except Exception as e:
                             logger.warning("idle prompt 발화 실패", error_type=type(e).__name__, error_message=str(e))
+                        self.state.idle_task = asyncio.current_task()
                 # 종료 — 누적 임계 초과
                 if elapsed_ms >= terminate_ms:
                     logger.event("call.idle_timeout", elapsed_ms=elapsed_ms)
@@ -530,10 +537,11 @@ class VoiceSession:
         if self._closed:
             return
         # baseline 보존 idle 복귀 — _start_idle_timer 우회.
+        # idle_task 자체는 호출자(_idle_loop) 가 관리하므로 여기선 spawn 하지 않는다.
+        # (예전엔 spawn 했지만 idle_loop 안에서 호출되는 경우 새 task 와 본래 task 가
+        # 동시에 polling 하는 문제 발생.)
         self.state.state = "idle"
         await self.send_json({"type": "state", "value": "idle"})
-        self._cancel_idle_timer()
-        self.state.idle_task = asyncio.create_task(self._idle_loop())
 
     # ---------- (c) AICC-910 DTMF ----------
     async def on_dtmf(self, digit: str) -> None:
@@ -620,7 +628,9 @@ class VoiceSession:
                 await self._on_speech_start()
             elif ev.kind == "end":
                 await self._on_speech_end()
-        if self.state.state == "listening":
+        # STT task 가 살아있는 동안 PCM 을 흘려보냄. 봇 발화 중에도 STT 가 partial 받아야
+        # echo 인지 진짜 사용자 발화인지 판단 가능 (state==listening 조건만으론 부족).
+        if self._stt_task is not None and not self._stt_task.done():
             await self._audio_q.put(chunk)
 
     async def on_text_message(self, user_text: str) -> None:
@@ -666,9 +676,9 @@ class VoiceSession:
                 await self._speak(greeting, runtime.voice, runtime.language)
             finally:
                 self.state.in_greeting = False
-            # 인사말 발화 후 idle 복귀 — 안 그러면 클라이언트가 사용자 음성을 echo로 차단함
-            if not self._closed:
-                await self.set_state("idle")
+            # idle 천이는 클라 playback_done ack 가 처리 (on_playback_done / fallback timer).
+            # 과거에는 여기서 즉시 set_state("idle") 했지만, 클라 audio queue 재생 중에 backend
+            # state 가 idle 로 풀려 barge-in cancel 분기를 못 잡는 버그가 있었음.
 
     async def close(self, reason: str = "normal") -> None:
         if self._closed:
@@ -728,33 +738,58 @@ class VoiceSession:
 
     # ---------- 내부 로직 ----------
     async def _on_speech_start(self) -> None:
-        # Echo grace — idle 상태에서 봇 발화 종료 직후 들어온 speech_start는 잔향으로 간주, 무시.
-        # (speaking 중 barge-in은 grace 적용 안 함 — 진짜 사용자 끼어들기 위해)
-        if self.state.state == "idle" and self.state.last_speak_end_t > 0:
-            import time as _time
-            elapsed = _time.monotonic() - self.state.last_speak_end_t
-            if elapsed < _ECHO_GRACE_S:
-                logger.debug("speech_start ignored — within echo grace", elapsed_ms=int(elapsed * 1000))
-                return
-        # (a) AICC-910 — 인사말 동안 barge-in 가드. greeting_barge_in=False(기본)면 cancel skip.
+        """VAD speech_start — STT 준비만. cancel/state 변경은 _run_stt 가 첫 partial 받을 때.
+
+        과거에는 여기서 바로 speech_task.cancel + set_state("listening") 했지만, 두 가지 문제:
+        (1) state 가 PCM ws 송출 직후 idle 로 풀려 클라 audio queue 재생 중에는 cancel 분기 진입 X
+        (2) 봇 스피커→마이크 echo 가 VAD 를 자꾸 깨워 false-positive cancel 발생
+        → 신호 기반 (STT partial) 으로 옮김. echo 면 partial 안 와서 자연스레 무시됨.
+        """
+        # 인사말 동안 barge-in 가드 — partial 도착 시점 가드로도 가능하지만,
+        # 이 단계에서 일찍 차단해 STT 자원/네트워크 비용을 아낌. greeting_barge_in=True 면 일반 경로.
         if self.state.in_greeting:
             cb = self._callbot()
             allow = bool(cb.greeting_barge_in) if cb is not None else False
             if not allow:
-                logger.debug("speech_start ignored — greeting_barge_in disabled")
                 return
-        # barge-in: 봇이 말하는 중이면 즉시 중단 (TTS speech_task + STT 이전 task 둘 다 정리)
-        if self.state.state == "speaking" and self.state.speech_task:
+        # 이전 turn 의 STT task 가 살아 있으면 정리 — 새 audio_q 로 교체하므로 그대로 두면 leak.
+        if self._stt_task and not self._stt_task.done():
+            self._stt_task.cancel()
+        # 이전 발화의 prefetch task가 남아있으면 정리 (interim 도달 → speech_end 없이 끊긴 경우)
+        if self.state.pending_runtime_task and not self.state.pending_runtime_task.done():
+            self.state.pending_runtime_task.cancel()
+        self.state.pending_runtime_task = None
+        self.state.pending_runtime_interim_text = ""
+        # (f1) — 매 발화마다 interim 첫 도달 시각 리셋
+        self.state.first_interim_t = None
+        # state 변경은 partial 도착 시 _trigger_barge_in 이 처리.
+        # STT 스트림 시작
+        self._audio_q = asyncio.Queue()
+        self._stt_task = asyncio.create_task(self._run_stt())
+
+    async def _on_speech_end(self) -> None:
+        import time as _time
+        # (b) AICC-910 — 사용자 발화 종료 시 침묵 카운트 리셋 (다음 turn 시작)
+        self._last_activity_t = _time.monotonic()
+        await self._audio_q.put(None)
+
+    async def _trigger_barge_in(self) -> None:
+        """STT 가 첫 의미 있는 텍스트를 받았을 때 호출. 봇 발화 cancel + state="listening" 천이.
+
+        호출 시점: `_run_stt` 의 result.text 첫 도달.
+        판단 기준은 `state == "speaking"` (옵션 A 로 ack 까지 유지). speech_task 의 done 여부와는
+        무관 — PCM ws 송출은 보통 ~500ms 안에 끝나지만 클라는 audio queue 에서 수 초 더 재생 중.
+        따라서 backend speech_task 가 done 이어도 클라 재생을 멈추려면 `stop_playback` ws 메시지가
+        필요. (없으면 cancel 시점에 봇 audio 가 계속 들림.)
+        """
+        if self.state.state == "speaking":
             import time as _time
             elapsed_ms: int | None = None
             if self.state.last_speak_start_t > 0:
                 elapsed_ms = int((_time.monotonic() - self.state.last_speak_start_t) * 1000)
             in_greeting = bool(self.state.in_greeting)
-            # 신규분에 span() 패턴 적용 — 통화 상세 Waterfall 에서 barge-in 시점 시각화.
-            # span() 이 try/finally 로 _stack pop 보장 → tracer.start/end raw 호출의 누수 위험 회피.
             async with self._tracer.span(
-                "barge_in",
-                "span",
+                "barge_in", "span",
                 input={"in_greeting": in_greeting, "elapsed_ms": elapsed_ms},
             ):
                 logger.event(
@@ -767,34 +802,21 @@ class VoiceSession:
                     "in_greeting": in_greeting,
                     "elapsed_ms": elapsed_ms,
                 })
-                self.state.speech_task.cancel()
-                # playback ack 정리 — 클라가 보낼 playback_done 은 이제 무의미 (cancel 된 발화).
-                # 늦게 도착해도 id mismatch 로 무시되게 pending 클리어.
+                # 클라 audio queue flush — backend 가 더 보낼 PCM 없어도 클라 버퍼는 살아있음.
+                await self.send_json({"type": "stop_playback"})
+                # backend speech_task 가 아직 PCM 송출 중이면 cancel (드물지만 긴 발화 초반에 가능)
+                st = self.state.speech_task
+                if st is not None and not st.done():
+                    st.cancel()
+                # playback ack 정리 — cancel 된 발화의 ack 는 무의미.
                 self.state.pending_speak_id = None
                 fb = self.state.playback_fallback_task
                 if fb is not None and not fb.done():
                     fb.cancel()
                 self.state.playback_fallback_task = None
-        # 이전 turn 의 STT task 가 살아 있으면 정리 — 새 audio_q 로 교체하므로 그대로 두면 leak.
-        if self._stt_task and not self._stt_task.done():
-            self._stt_task.cancel()
-        # 이전 발화의 prefetch task가 남아있으면 정리 (interim 도달 → speech_end 없이 끊긴 경우)
-        if self.state.pending_runtime_task and not self.state.pending_runtime_task.done():
-            self.state.pending_runtime_task.cancel()
-        self.state.pending_runtime_task = None
-        self.state.pending_runtime_interim_text = ""
-        # (f1) — 매 발화마다 interim 첫 도달 시각 리셋
-        self.state.first_interim_t = None
-        await self.set_state("listening")
-        # STT 스트림 시작
-        self._audio_q = asyncio.Queue()
-        self._stt_task = asyncio.create_task(self._run_stt())
-
-    async def _on_speech_end(self) -> None:
-        import time as _time
-        # (b) AICC-910 — 사용자 발화 종료 시 침묵 카운트 리셋 (다음 turn 시작)
-        self._last_activity_t = _time.monotonic()
-        await self._audio_q.put(None)
+        # state 천이 — 이미 listening/thinking 이면 noop, speaking 이면 listening 으로
+        if self.state.state not in ("listening", "thinking"):
+            await self.set_state("listening")
 
     def _maybe_start_prefetch(self, interim_text: str) -> None:
         """interim 텍스트 길이가 임계치 이상이고 아직 prefetch 안 했으면 백그라운드 task spawn.
@@ -895,6 +917,7 @@ class VoiceSession:
         )
         final_text = ""
         partial_count = 0
+        triggered_barge_in = False
         # (d) AICC-910 — CallbotAgent.stt_keywords 를 phrase hint 로 STT 에 전달.
         keywords = self._stt_keywords()
         try:
@@ -906,6 +929,11 @@ class VoiceSession:
             ):
                 if not result.text:
                     continue
+                # 첫 의미 있는 텍스트 도달 시 barge-in trigger — VAD start 가 아닌 이 시점에서
+                # cancel/state 천이. echo 는 보통 text 안 만들거나 0-char final 이라 이 분기 미진입.
+                if not triggered_barge_in:
+                    triggered_barge_in = True
+                    await self._trigger_barge_in()
                 if not result.is_final:
                     partial_count += 1
                     # (f1) AICC-910 — interim 첫 도달 시각 기록 (barge-in 가속 측정/테스트용)
@@ -967,7 +995,10 @@ class VoiceSession:
         if final_text.strip():
             await self._handle_user_final(final_text.strip())
         else:
-            await self.set_state("idle")
+            # echo VAD trigger 로 STT 가 돌았지만 빈 final — 봇 발화가 진행 중이면 state 유지.
+            # 봇 발화 종료 ack 가 idle 천이를 처리.
+            if self.state.state not in ("speaking", "thinking"):
+                await self.set_state("idle")
 
     async def _build_history(self, max_turns: int = 12) -> list[ChatMessage]:
         """최근 N turn의 final transcript를 LLM 히스토리로 변환.
@@ -1134,9 +1165,10 @@ class VoiceSession:
                 meta["ttff_ms"] = ttff_ms
             await self._tracer.end(turn_id, turn_start, meta=meta)
 
-        # barge-in 보호: 발화 도중 사용자가 끼어들면 _on_speech_start가 이미 state를 "listening"
-        # (또는 그 뒤 thinking)으로 바꿔놨을 수 있다. 그 경우 idle로 덮어쓰지 않는다.
-        if not self._closed and self.state.state not in ("listening", "thinking"):
+        # barge-in 보호: 발화 도중 사용자가 끼어들면 `_trigger_barge_in` 이 이미 state 를 "listening"
+        # (또는 그 뒤 thinking)으로 바꿔놨을 수 있다. 그 경우 idle 로 덮어쓰지 않는다.
+        # speaking: 봇 발화가 정상 완료된 경우 — playback_done ack 가 idle 천이를 처리하므로 여기선 skip.
+        if not self._closed and self.state.state not in ("listening", "thinking", "speaking"):
             await self.set_state("idle")
 
     # ---------- callbot_v0 흡수 — 외부 RAG (document_processor) ----------
@@ -1241,7 +1273,7 @@ class VoiceSession:
         try:
             try:
                 async for chunk in stream_iter:
-                    # barge-in race 가드 — _on_speech_start 가 state="listening" 으로 전환 후
+                    # barge-in race 가드 — `_trigger_barge_in` 이 state="listening" 으로 전환 후
                     # cancel 신호 도착 전 다음 chunk 가 새는 케이스 차단.
                     if self.state.state == "listening":
                         break
@@ -2174,7 +2206,7 @@ class VoiceSession:
         return completed
 
     async def _playback_fallback_timer(self, speak_id: str, audio_duration_s: float) -> None:
-        """클라 `playback_done` 미수신 시 보수 timeout 으로 `_last_activity_t` 강제 갱신.
+        """클라 `playback_done` 미수신 시 보수 timeout 으로 `_last_activity_t` 강제 갱신 + idle 천이.
 
         audio_duration + 5s 마진. 도착이 정상이면 timer 는 cancel 되므로 본 함수는 거의 안 도달.
         """
@@ -2191,9 +2223,13 @@ class VoiceSession:
                 speak_id=speak_id,
                 audio_duration_s=audio_duration_s,
             )
+            # state 천이 — speaking 으로 유지 중이었다면 idle 로 복귀. 다른 state (listening/thinking)
+            # 는 다른 흐름이 관리하므로 건드리지 않음.
+            if not self._closed and self.state.state == "speaking":
+                await self.set_state("idle")
 
     async def on_playback_done(self, speak_id: str) -> None:
-        """클라가 PCM 큐 재생 완료를 보고. 일치하는 pending_speak_id 만 baseline 갱신.
+        """클라가 PCM 큐 재생 완료를 보고. 일치하는 pending_speak_id 만 baseline 갱신 + idle 천이.
 
         늦게 도착한 ack / id mismatch / barge-in 으로 pending 이 클리어된 케이스는 silent ignore.
         """
@@ -2206,6 +2242,10 @@ class VoiceSession:
             t.cancel()
         self.state.playback_fallback_task = None
         self._last_activity_t = _time.monotonic()
+        # state 천이 — speaking 으로 유지 중이었다면 idle 로 복귀. (barge-in 으로 이미 listening 으로
+        # 빠졌거나 다음 turn 으로 thinking 전환됐다면 건드리지 않음.)
+        if not self._closed and self.state.state == "speaking":
+            await self.set_state("idle")
 
     async def _save_transcript(self, role: str, text: str) -> None:
         t = models.Transcript(session_id=self.session_id, role=role, text=text, is_final=True)
