@@ -23,7 +23,7 @@ argparse:
   --bot-id        통화 봇 ID (e2e seed 의 main_bot_id)
   --scenario      basic | barge_in | end_call | text_only
   --wav           tests/e2e_fixtures/ 의 발화 파일 (확장자 제외)
-  --backend       http://127.0.0.1:8765 (기본)
+  --backend       http://127.0.0.1:8080 (기본)
   --timeout       총 통화 timeout 초 (기본 30)
 
 출력 (stdout): {"ok": bool, "session_id": int, "events": [...], "transcripts": [...], "traces": [...]}
@@ -342,7 +342,7 @@ async def main() -> None:
     p.add_argument("--bot-id", type=int, required=True)
     p.add_argument("--scenario", required=True, choices=["basic", "barge_in", "end_call", "text_only", "silent_transfer", "idle_timeout", "dtmf", "dtmf_terminate", "dtmf_inject", "kb_question"])
     p.add_argument("--wav", default=None, help="fixture 이름 (확장자 제외)")
-    p.add_argument("--backend", default="http://127.0.0.1:8765")
+    p.add_argument("--backend", default="http://127.0.0.1:8080")
     p.add_argument("--timeout", type=float, default=30.0)
     args = p.parse_args()
 

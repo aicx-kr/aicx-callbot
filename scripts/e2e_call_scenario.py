@@ -13,8 +13,8 @@ import httpx
 import websockets
 
 
-API = "http://localhost:8765"
-WS = "ws://localhost:8765/ws/calls"
+API = "http://localhost:8080"
+WS = "ws://localhost:8080/ws/calls"
 
 
 async def run():

@@ -28,7 +28,7 @@ export const api = {
 
 // 브라우저에서 WebSocket 연결할 base URL.
 // 우선순위:
-//   1) NEXT_PUBLIC_BACKEND_URL 이 명시되면 그쪽으로 직결 — 로컬 dev (localhost:8765) 에서 Next.js
+//   1) NEXT_PUBLIC_BACKEND_URL 이 명시되면 그쪽으로 직결 — 로컬 dev (localhost:8080) 에서 Next.js
 //      dev server 가 WS rewrite 를 못 하므로 backend 에 직접 연결해야 함.
 //   2) 미설정이면 same-origin — 클러스터는 ALB/ingress 가 path 기반 (/ws/*) 으로 backend pod 으로
 //      라우팅하므로 페이지와 동일 host/cert 를 자동 상속. 별도 도메인 cert 관리 불필요.

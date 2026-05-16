@@ -5,7 +5,7 @@
 
 set +e
 
-BE="${BE:-http://localhost:8765}"
+BE="${BE:-http://localhost:8080}"
 FE="${FE:-http://localhost:3000}"
 FAILED=0
 PASSED=0

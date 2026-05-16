@@ -1,4 +1,4 @@
-# backend — FastAPI 콜봇 서버 (port 8765)
+# backend — FastAPI 콜봇 서버 (port 8080)
 
 Clean Architecture 4층으로 나뉘어 있다. 의존 방향은 **api → application → infrastructure → domain** (안쪽으로만).
 
@@ -24,9 +24,9 @@ src/
 #   GOOGLE_APPLICATION_CREDENTIALS=<file path>
 
 # 2) 실행
-PORT=8765 ./run.sh
-# → uvicorn src.app:create_app --factory --port 8765
-# → http://localhost:8765/api/health
+PORT=8080 ./run.sh
+# → uvicorn src.app:create_app --factory --port 8080
+# → http://localhost:8080/api/health
 # → 응답에 voice_mode_available=true 면 GCP 모드 사용 가능
 ```
 

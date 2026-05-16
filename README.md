@@ -13,7 +13,7 @@ B2B 콜봇 SaaS 플랫폼. 한 통화에 메인 1명 + 서브 N명의 봇이 협
 
 ```
 aicx-callbot/
-├── backend/             FastAPI + SQLAlchemy 2.0 + SQLite (port 8765)
+├── backend/             FastAPI + SQLAlchemy 2.0 + SQLite (port 8080)
 │   ├── src/
 │   │   ├── domain/          ① 비즈니스 규칙 (entity·invariant·port)
 │   │   ├── application/     ② 서비스·통화 오케스트레이션·tool runtime
@@ -70,15 +70,15 @@ Tenant (고객사)
 
 ## 빠른 시작
 
-### Backend (port 8765)
+### Backend (port 8080)
 
 ```bash
 cd backend
 # .env 파일 준비
 #   GOOGLE_SERVICE_ACCOUNT_BASE64=<base64 SA>  또는
 #   GOOGLE_APPLICATION_CREDENTIALS=<file path>
-PORT=8765 ./run.sh
-# → http://localhost:8765/api/health 200 + voice_mode_available=true
+PORT=8080 ./run.sh
+# → http://localhost:8080/api/health 200 + voice_mode_available=true
 ```
 
 ### Frontend (port 3000)

@@ -67,9 +67,9 @@ jobs:
         # 브라우저 측 (WS / fetch) 는 `backendWsUrl()` 이 same-origin 사용 — 별도 env 불필요.
         run: |
           if [ "${{ inputs.environment }}" = "prod" ]; then
-            echo "url=http://aicx-callbot-server.aicx-prod-aicx-callbot.svc.cluster.local:8765" >> $GITHUB_OUTPUT
+            echo "url=http://aicx-callbot-server.aicx-prod-aicx-callbot.svc.cluster.local:8080" >> $GITHUB_OUTPUT
           else
-            echo "url=http://aicx-callbot-server.aicx-dev-aicx-callbot.svc.cluster.local:8765" >> $GITHUB_OUTPUT
+            echo "url=http://aicx-callbot-server.aicx-dev-aicx-callbot.svc.cluster.local:8080" >> $GITHUB_OUTPUT
           fi
 
       - name: Docker build and push

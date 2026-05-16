@@ -7,7 +7,7 @@
  *   pnpm exec playwright test --ui       # UI 모드 (디버깅)
  *
  * 가정:
- *   - backend: http://localhost:8765 (uvicorn 으로 띄워둠)
+ *   - backend: http://localhost:8080 (uvicorn 으로 띄워둠)
  *   - frontend: http://localhost:3000 (pnpm dev 로 띄워둠)
  *   - DB 에 callbot-e2e-test tenant 가 e2e_seed.py 로 미리 준비됨
  *

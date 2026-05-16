@@ -18,13 +18,13 @@
 
 ```bash
 # Backend health
-curl -sf http://localhost:8765/api/health | jq .
+curl -sf http://localhost:8080/api/health | jq .
 
 # 핵심 endpoints
-curl -sf http://localhost:8765/api/tenants | jq 'length'
-curl -sf http://localhost:8765/api/bots | jq 'length'
-curl -sf "http://localhost:8765/api/skills?bot_id=1" | jq 'length'
-curl -sf "http://localhost:8765/api/tools?bot_id=1" | jq 'length'
+curl -sf http://localhost:8080/api/tenants | jq 'length'
+curl -sf http://localhost:8080/api/bots | jq 'length'
+curl -sf "http://localhost:8080/api/skills?bot_id=1" | jq 'length'
+curl -sf "http://localhost:8080/api/tools?bot_id=1" | jq 'length'
 
 # Frontend (307 = redirect to /agents, 200 = page rendered)
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/

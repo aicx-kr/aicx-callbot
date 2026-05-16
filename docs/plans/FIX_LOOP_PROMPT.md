@@ -71,7 +71,7 @@ callbot-platform/docs/plans/FIX_LOG.md 읽기.
 
 ## Step 6 — 수정 + 검증
 1. 코드 수정 (Edit/Write)
-2. 백엔드 변경 시: `lsof -ti:8765 | xargs -r kill && PORT=8765 python main.py &` + 새 컬럼이면 `rm -f callbot.db`
+2. 백엔드 변경 시: `lsof -ti:8080 | xargs -r kill && PORT=8080 python main.py &` + 새 컬럼이면 `rm -f callbot.db`
 3. 프론트 변경: HMR 자동. tail /tmp/web-dev.log로 컴파일 에러 확인.
 4. 검증 — 가능한 방법 중 적합한 것:
    - REST: `httpx` 또는 `/usr/bin/curl`
