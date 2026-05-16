@@ -197,6 +197,9 @@ class _SessionState:
     idle_task: asyncio.Task | None = None
     # interim STT 첫 도달 시각 — (a) barge-in 가속 판정 (f1) 단위 테스트용.
     first_interim_t: float | None = None
+    # _run_streaming_turn 이 commit 한 sentence 누적 (turn 도중 barge-in cancel 시 _handle_user_final
+    # 이 인스턴스 상태에서 partial 을 회수해 transcript 에 저장하기 위함). turn 시작 시 [] 로 초기화.
+    streaming_sentences: list[str] = field(default_factory=list)
 
 
 class VoiceSession:
@@ -1024,9 +1027,21 @@ class VoiceSession:
             # callbot_v0 흡수 #1 (function calling) + #2 (streaming + 문장 TTS)
             # 항상 stream으로 시작. 첫 chunk가 tool_call이면 tool 루프 진입, text면 문장 streaming.
             tool_specs = await self._build_tool_specs()
-            sentences, signal_tail = await self._run_streaming_turn(
-                turn_id, resolved_system_prompt, user_text, history, runtime, tool_specs,
-            )
+            # barge-in cancel 시 partial sentence 회수용 baseline 초기화 (방어).
+            self.state.streaming_sentences = []
+            try:
+                sentences, signal_tail = await self._run_streaming_turn(
+                    turn_id, resolved_system_prompt, user_text, history, runtime, tool_specs,
+                )
+            except asyncio.CancelledError:
+                # _stt_task cancel 로 도달. commit 된 sentence (PCM 끝까지 송출된 것) 만 transcript
+                # 에 보존. shield 로 save 가 cancel 영향 안 받게 한 뒤 cancel 재전파.
+                committed = list(self.state.streaming_sentences)
+                if committed:
+                    full_body = " ".join(committed).strip()
+                    if full_body:
+                        await asyncio.shield(self._save_transcript("assistant", full_body))
+                raise
 
             # sentences=None: tool path 완료 또는 에러. 시그널 파싱·transcript 저장 스킵하고
             # finally 거쳐 set_state("idle")로 복귀. 에러 경로는 내부에서 이미 idle 처리됨.
@@ -1081,12 +1096,15 @@ class VoiceSession:
                         await self._tracer.end(tts_id, tts_start, error=str(e))
                         raise
 
-                # streaming 중 이미 TTS·송출된 문장들은 transcript로 한 번 저장 (DB 행 1개)
+                # streaming 중 이미 TTS·송출된 문장들은 transcript로 한 번 저장 (DB 행 1개).
+                # commit-aware 로직 (commit-aware-streaming-turn) 으로 sentences 가 비어 있을 수 있음
+                # (LLM 첫 chunk 도착 전 barge-in 등) — 빈 row 저장 방지.
                 if sentences:
-                    full_body = " ".join(sentences)
+                    full_body = " ".join(sentences).strip()
                     if body_residual.strip():
                         full_body = (full_body + " " + body_residual).strip()
-                    await self._save_transcript("assistant", full_body)
+                    if full_body:
+                        await self._save_transcript("assistant", full_body)
         finally:
             # TTFF 계산 (있을 때만): user_text 처리 시작 ~ 첫 PCM 송신
             ttff_ms = None
@@ -1168,8 +1186,15 @@ class VoiceSession:
           sentences = streaming으로 emit·TTS된 문장 list (transcript 누적용)
           signal_text = 누적 텍스트 + 마지막 partial — parse_signal_and_strip 입력
           turn이 tool 루프나 에러로 종료되면 (None, None)
+
+        commit 정책: `_speak` 가 PCM 끝까지 emit 한 sentence 만 sentences 에 추가. barge-in
+        으로 cut 된 sentence (uncommitted) 는 폐기. 그리고 partial sentences 회수 위해
+        `self.state.streaming_sentences` (인스턴스 속성) 에도 같은 리스트 참조를 둠 — turn 도중
+        CancelledError 로 본 함수가 중단되면 `_handle_user_final` 의 except 가 그 리스트에서
+        commit 된 sentence 들을 읽어 transcript 에 저장.
         """
         sentences: list[str] = []
+        self.state.streaming_sentences = sentences  # 같은 list 참조 — partial 회수용
         partial_tail = ""
         first_chunk: LLMResponse | None = None
 
@@ -1199,6 +1224,10 @@ class VoiceSession:
         try:
             try:
                 async for chunk in stream_iter:
+                    # barge-in race 가드 — _on_speech_start 가 state="listening" 으로 전환 후
+                    # cancel 신호 도착 전 다음 chunk 가 새는 케이스 차단.
+                    if self.state.state == "listening":
+                        break
                     if first_chunk is None:
                         first_chunk = chunk
                         # 첫 chunk가 tool_call이면 stream 닫고 tool 루프로
@@ -1231,8 +1260,14 @@ class VoiceSession:
                         if self._looks_like_signal_chunk(chunk.text):
                             partial_tail = (partial_tail + "\n" + chunk.text).strip() if partial_tail else chunk.text
                         else:
+                            # commit-aware: PCM 끝까지 송출된 sentence 만 누적. cut 된 건 폐기.
+                            committed = await self._send_and_speak_sentence(
+                                chunk.text, runtime, turn_id, len(sentences),
+                            )
+                            if not committed:
+                                # barge-in 으로 sentence cut — 다음 chunk 도 처리 안 함.
+                                break
                             sentences.append(chunk.text)
-                            await self._send_and_speak_sentence(chunk.text, runtime, turn_id, len(sentences) - 1)
                 # stream 종료 — 마지막 partial(종결자 없는 buf)이 sentences에 합쳐졌을 수도 있음.
                 # GeminiLLM은 partial을 마지막 yield로 보내므로 위 루프에서 이미 들어옴.
                 # signal 파싱을 위해 누적 텍스트 + 만약 partial을 따로 받았다면 합치는 로직 필요 —
@@ -1268,7 +1303,14 @@ class VoiceSession:
                 response_chars=sum(len(s) for s in sentences),
             )
         finally:
-            pass
+            # barge-in break (listening state / uncommitted sentence) 경로에서 stream_iter 가 닫히지
+            # 않으면 LLM provider 가 백그라운드에서 계속 토큰 생성 — 비용/race 위험. tool_call 분기는
+            # 이미 명시 aclose() 호출하므로 본 finally 는 정상 종료/Exception/CancelledError/break 모두
+            # 커버하는 안전망.
+            try:
+                await stream_iter.aclose()
+            except Exception:
+                pass
 
         # signal_tail: 시그널 JSON으로 의심되어 TTS 스킵된 chunk들의 누적. parse_signal_and_strip 입력.
         # streaming으로 emit·TTS된 sentences는 다시 처리하지 않음 — 중복 방지.
@@ -1276,11 +1318,15 @@ class VoiceSession:
 
     async def _send_and_speak_sentence(
         self, sentence: str, runtime, turn_id: int, idx: int,
-    ) -> None:
+    ) -> bool:
         """문장 도착 즉시 transcript 전송 + TTS 합성·송출. 문장 N+1은 N의 송출 완료 후 시작 (직렬).
 
         직렬화 이유: TTSPort.synthesize가 AsyncIterator[bytes]라 클라에 PCM 순서가 보장되어야 함.
         callbot_v0와 동일한 패턴.
+
+        반환: True=PCM 끝까지 송출 (commit), False=barge-in 으로 중간 cut (uncommitted).
+        uncommitted sentence 는 호출자가 transcript 누적 리스트에 추가하지 않아야 함 — 고객이
+        끝까지 못 들은 내용을 LLM 다음 턴 history 로 들이지 않기 위함.
         """
         await self.send_json({"type": "transcript", "role": "assistant", "text": sentence})
         tts_id, tts_start = await self._tracer.start(
@@ -1289,9 +1335,12 @@ class VoiceSession:
         )
         tts_mono_start = time.monotonic()
         try:
-            await self._speak(sentence, runtime.voice, runtime.language)
+            committed = await self._speak(sentence, runtime.voice, runtime.language)
             tts_ms = int((time.monotonic() - tts_mono_start) * 1000)
-            await self._tracer.end(tts_id, tts_start, meta={"chars": len(sentence), "tts_ms": tts_ms})
+            await self._tracer.end(
+                tts_id, tts_start,
+                meta={"chars": len(sentence), "tts_ms": tts_ms, "committed": committed},
+            )
             # AICC-909 — tts.synthesized 표준 이벤트.
             logger.event(
                 "tts.synthesized",
@@ -1301,7 +1350,9 @@ class VoiceSession:
                 language=runtime.language,
                 vendor=settings.provider_tts,
                 sentence_idx=idx,
+                committed=committed,
             )
+            return committed
         except Exception as e:
             tts_ms = int((time.monotonic() - tts_mono_start) * 1000)
             await self._tracer.end(tts_id, tts_start, error=str(e), meta={"tts_ms": tts_ms})
@@ -1363,18 +1414,24 @@ class VoiceSession:
                     self.state.active_skill = signal.next_skill
                     await self.send_json({"type": "skill", "name": signal.next_skill})
             if body:
-                await self._save_transcript("assistant", body)
+                # commit-aware: PCM 끝까지 송출된 경우에만 transcript 에 save. barge-in 으로 cut 된
+                # tool followup 응답은 LLM 다음 턴 history 에 포함되지 않게 폐기.
+                # cancel 전파 case 는 _handle_user_final 의 try/except CancelledError 가 처리.
                 await self.send_json({"type": "transcript", "role": "assistant", "text": body})
                 tts_id, tts_start = await self._tracer.start(
                     "tts.followup", "tts", parent_id=turn_id,
                     input={"text": body, "voice": runtime.voice, "language": runtime.language},
                 )
                 try:
-                    await self._speak(body, runtime.voice, runtime.language)
-                    await self._tracer.end(tts_id, tts_start, meta={"chars": len(body)})
+                    committed = await self._speak(body, runtime.voice, runtime.language)
+                    await self._tracer.end(
+                        tts_id, tts_start, meta={"chars": len(body), "committed": committed},
+                    )
                 except Exception as e:
                     await self._tracer.end(tts_id, tts_start, error=str(e))
                     raise
+                if committed:
+                    await self._save_transcript("assistant", body)
 
     # ---------- callbot_v0 흡수 #1 — native function calling 헬퍼 ----------
 
@@ -2010,7 +2067,14 @@ class VoiceSession:
                 error_message=str(e),
             )
 
-    async def _speak(self, text: str, voice: str, language: str) -> None:
+    async def _speak(self, text: str, voice: str, language: str) -> bool:
+        """봇 발화. 반환값: True=PCM 끝까지 송출 완료, False=speech_task 가 barge-in 으로 cancel.
+
+        주의: 외부 task (_stt_task 등) 가 cancelling 중이면 CancelledError 를 그대로 propagate —
+        호출자(`_run_streaming_turn`/`_handle_user_final`) 가 partial sentences 를 save 한 뒤
+        cancel 을 위로 전달할 수 있도록. 과거에는 무조건 swallow 해서 외부 cancel 신호가 사라지고
+        LLM 스트림 루프가 다음 sentence 를 계속 emit 하는 버그가 있었음.
+        """
         import time as _time
         self.state.last_speak_start_t = _time.monotonic()
 
@@ -2036,7 +2100,10 @@ class VoiceSession:
                         self.state.first_audio_t = _time.monotonic()
                     await self.send_bytes(pcm)
             except asyncio.CancelledError:
-                return
+                # propagate — speech_task 가 CancelledError 로 종료해야 outer `await speech_task` 가
+                # 예외를 받음. `return` 으로 삼키면 task 가 정상 종료로 보여 commit 판정 어긋남.
+                # 보고: CodeRabbit PR #13 (https://github.com/aicx-kr/aicx-callbot/pull/13).
+                raise
             except Exception as e:
                 logger.exception("TTS error", error_type=type(e).__name__)
                 await self.send_json({"type": "error", "where": "tts", "message": str(e)})
@@ -2047,10 +2114,17 @@ class VoiceSession:
         # 발견 경로: e2e_voice_sim.py 의 barge_in 시나리오, 2026-05-15.
         self.state.speech_task = asyncio.create_task(speak_task())
         await self.set_state("speaking")
+        completed = True
         try:
             await self.state.speech_task
         except asyncio.CancelledError:
-            pass
+            completed = False
+            # 외부 task 가 cancel 중인 경우엔 신호를 위로 전파 — 호출자에서 partial save 후 raise.
+            # asyncio.current_task().cancelling() 은 Python 3.11+ — 미만 환경은 보수적으로 그대로 propagate.
+            current = asyncio.current_task()
+            outer_cancelling = getattr(current, "cancelling", lambda: 0)() > 0 if current else False
+            if outer_cancelling:
+                raise
         finally:
             # 봇 발화 종료 시각 기록 — _on_speech_start의 echo grace 기준점.
             # cancel(barge-in)된 경우에도 잔향 가능성 있어 동일하게 기록.
@@ -2060,6 +2134,7 @@ class VoiceSession:
             last = getattr(self, "_last_activity_t", 0.0)
             if last < self.state.last_speak_end_t:
                 self._last_activity_t = self.state.last_speak_end_t
+        return completed
 
     async def _save_transcript(self, role: str, text: str) -> None:
         t = models.Transcript(session_id=self.session_id, role=role, text=text, is_final=True)
