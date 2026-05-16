@@ -490,10 +490,17 @@ class VoiceSession:
                     self._idle_prompt_emitted = True
                     logger.event("call.idle_prompt", elapsed_ms=elapsed_ms, text_chars=len(prompt_text or ""))
                     if prompt_text:
+                        # 자기 cancel 방지: _speak_idle_prompt → _speak → set_state("speaking") 가
+                        # _cancel_idle_timer 를 호출하는데, self.state.idle_task = current task = self.
+                        # 자기 자신 cancel → CancelledError → _speak 도중 중단 → tts.synthesized 안 됨.
+                        # idle_task ref 를 None 으로 비워 cancel 시도가 noop 이 되게 한 뒤,
+                        # prompt 발화 끝나면 자기 자신을 다시 ref 로 복원해 polling 계속.
+                        self.state.idle_task = None
                         try:
                             await self._speak_idle_prompt(prompt_text)
                         except Exception as e:
                             logger.warning("idle prompt 발화 실패", error_type=type(e).__name__, error_message=str(e))
+                        self.state.idle_task = asyncio.current_task()
                 # 종료 — 누적 임계 초과
                 if elapsed_ms >= terminate_ms:
                     logger.event("call.idle_timeout", elapsed_ms=elapsed_ms)
@@ -530,10 +537,11 @@ class VoiceSession:
         if self._closed:
             return
         # baseline 보존 idle 복귀 — _start_idle_timer 우회.
+        # idle_task 자체는 호출자(_idle_loop) 가 관리하므로 여기선 spawn 하지 않는다.
+        # (예전엔 spawn 했지만 idle_loop 안에서 호출되는 경우 새 task 와 본래 task 가
+        # 동시에 polling 하는 문제 발생.)
         self.state.state = "idle"
         await self.send_json({"type": "state", "value": "idle"})
-        self._cancel_idle_timer()
-        self.state.idle_task = asyncio.create_task(self._idle_loop())
 
     # ---------- (c) AICC-910 DTMF ----------
     async def on_dtmf(self, digit: str) -> None:
@@ -769,13 +777,12 @@ class VoiceSession:
         """STT 가 첫 의미 있는 텍스트를 받았을 때 호출. 봇 발화 cancel + state="listening" 천이.
 
         호출 시점: `_run_stt` 의 result.text 첫 도달.
-        - 봇 발화 중 (speech_task 살아있음): cancel + barge_in 이벤트 + playback ack 정리
-        - 봇 발화 없음 (이미 끝났거나 호출 안 됨): cancel 스킵, state 천이만
-        - 인사말 중 + greeting_barge_in 비활성: 진입 자체 없음 (_on_speech_start 가 일찍 차단)
+        판단 기준은 `state == "speaking"` (옵션 A 로 ack 까지 유지). speech_task 의 done 여부와는
+        무관 — PCM ws 송출은 보통 ~500ms 안에 끝나지만 클라는 audio queue 에서 수 초 더 재생 중.
+        따라서 backend speech_task 가 done 이어도 클라 재생을 멈추려면 `stop_playback` ws 메시지가
+        필요. (없으면 cancel 시점에 봇 audio 가 계속 들림.)
         """
-        # 봇 발화 cancel
-        st = self.state.speech_task
-        if st is not None and not st.done():
+        if self.state.state == "speaking":
             import time as _time
             elapsed_ms: int | None = None
             if self.state.last_speak_start_t > 0:
@@ -795,7 +802,12 @@ class VoiceSession:
                     "in_greeting": in_greeting,
                     "elapsed_ms": elapsed_ms,
                 })
-                st.cancel()
+                # 클라 audio queue flush — backend 가 더 보낼 PCM 없어도 클라 버퍼는 살아있음.
+                await self.send_json({"type": "stop_playback"})
+                # backend speech_task 가 아직 PCM 송출 중이면 cancel (드물지만 긴 발화 초반에 가능)
+                st = self.state.speech_task
+                if st is not None and not st.done():
+                    st.cancel()
                 # playback ack 정리 — cancel 된 발화의 ack 는 무의미.
                 self.state.pending_speak_id = None
                 fb = self.state.playback_fallback_task

@@ -15,6 +15,7 @@
         | {"type":"skill","name":"..."}
         | {"type":"handover"}
         | {"type":"barge_in","in_greeting":bool,"elapsed_ms":int|None}  # 봇 발화 중단
+        | {"type":"stop_playback"}                       # 클라 audio queue 즉시 flush (barge-in)
         | {"type":"speak_end","id":"<speak_id>"}         # turn 발화 PCM 송출 완료 marker
         | {"type":"error","where":"...","message":"..."}
         | {"type":"end","reason":"..."}

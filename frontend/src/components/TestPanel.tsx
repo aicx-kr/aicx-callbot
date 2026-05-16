@@ -43,6 +43,8 @@ export function TestPanel({ bot, voiceModeAvailable }: { bot: Bot; voiceModeAvai
   const micNodeRef = useRef<AudioWorkletNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const playbackTimeRef = useRef(0);
+  // barge-in 시 audio queue flush 용 — playPCM 으로 schedule 한 source 들 추적
+  const playbackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const recogRef = useRef<{ stop: () => void; start: () => void; _stopped?: boolean; _paused?: boolean } | null>(null);
   const modeRef = useRef<Mode>('text');
   const stateRef = useRef<CallState>('idle');
@@ -167,6 +169,9 @@ export function TestPanel({ bot, voiceModeAvailable }: { bot: Bot; voiceModeAvai
         });
         break;
       }
+      case 'stop_playback':
+        flushPlayback();
+        break;
       case 'tool_call':
         addBubble({
           role: 'tool',
@@ -387,6 +392,18 @@ export function TestPanel({ bot, voiceModeAvailable }: { bot: Bot; voiceModeAvai
     const when = Math.max(ctx.currentTime, playbackTimeRef.current);
     src.start(when);
     playbackTimeRef.current = when + buf.duration;
+    // stop_playback (barge-in) 시 즉시 중단할 수 있게 추적. 재생 끝나면 set 에서 제거.
+    playbackSourcesRef.current.add(src);
+    src.onended = () => playbackSourcesRef.current.delete(src);
+  }
+
+  function flushPlayback() {
+    // backend 가 stop_playback 송신 — barge-in. 현재 큐에 schedule 된 PCM 즉시 중단.
+    for (const src of playbackSourcesRef.current) {
+      try { src.stop(); } catch {}
+    }
+    playbackSourcesRef.current.clear();
+    playbackTimeRef.current = 0;
   }
 
   function sendText() {
@@ -418,6 +435,7 @@ export function TestPanel({ bot, voiceModeAvailable }: { bot: Bot; voiceModeAvai
     audioCtxRef.current = null;
     recogRef.current = null;
     playbackTimeRef.current = 0;
+    playbackSourcesRef.current.clear();
     blockUntilRef.current = 0;
     setRunning(false);
     setState('idle');

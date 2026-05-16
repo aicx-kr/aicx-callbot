@@ -455,7 +455,10 @@ async def test_dtmf_closes_tracer_span_when_unmapped():
 async def test_speak_idle_prompt_preserves_baseline():
     """CodeRabbit 지적: prompt 발화 후 set_state("idle") 가 _start_idle_timer 를 통해
     _idle_prompt_emitted / _last_activity_t 를 리셋해서 "1회 prompt + 누적 silence terminate"
-    룰이 깨지던 문제 수정. _speak_idle_prompt 가 set_state 를 우회하고 baseline 보존."""
+    룰이 깨지던 문제 수정. _speak_idle_prompt 가 set_state 를 우회하고 baseline 보존.
+
+    idle_task 의 재spawn 책임은 _idle_loop 가 가짐 (자기 cancel 방지 시 caller 가 복원) —
+    여기서는 baseline 과 state 만 검증."""
     cb = CallbotAgent(id=1, tenant_id=1, name="cb")
     sess = _make_session(callbot=cb)
     sess._speak = AsyncMock()  # type: ignore
@@ -473,13 +476,6 @@ async def test_speak_idle_prompt_preserves_baseline():
     assert sess._last_activity_t == baseline_t, "last_activity_t 리셋되면 terminate 카운트 재시작"
     # state 는 idle 로 복귀
     assert sess.state.state == "idle"
-    # idle_task 가 재시작되었는지 (None 이 아닌 새 task)
-    assert sess.state.idle_task is not None
-    sess.state.idle_task.cancel()
-    try:
-        await sess.state.idle_task
-    except (asyncio.CancelledError, BaseException):
-        pass
 
 
 @pytest.mark.asyncio
